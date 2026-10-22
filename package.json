@@ -16,14 +16,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kekincai/infinity-newtab-extension.git"
+    "url": "git+https://github.com/skymanbj/infinity-newtab-extension.git"
   },
   "keywords": [],
   "type": "commonjs",
   "bugs": {
-    "url": "https://github.com/kekincai/infinity-newtab-extension/issues"
+    "url": "https://github.com/skymanbj/infinity-newtab-extension/issues"
   },
-  "homepage": "https://github.com/kekincai/infinity-newtab-extension#readme",
+  "homepage": "https://github.com/skymanbj/infinity-newtab-extension#readme",
   "private": true,
   "devDependencies": {
     "@playwright/test": "^1.62.0",
