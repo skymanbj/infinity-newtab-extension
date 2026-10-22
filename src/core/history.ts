@@ -1,6 +1,6 @@
 import type { RecentSite } from './types';
 
-type HostStats = RecentSite & { hostnames: Map<string, number>; rootTitle: string };
+type HostStats = RecentSite & { origins: Map<string, number>; rootTitle: string };
 
 /** Groups history by site, keeps the hostname people actually visit and a readable site name. */
 export function rankSites(items: Array<Record<string, unknown>>): RecentSite[] {
@@ -10,8 +10,10 @@ export function rankSites(items: Array<Record<string, unknown>>): RecentSite[] {
             const url = new URL(String(item.url ?? ''));
             if (!['http:', 'https:'].includes(url.protocol)) return;
             const hostname = url.hostname.toLowerCase();
-            const host = hostname.replace(/^www\./, '');
-            if (!host || host === 'newtab' || /(^|\.)google\.[a-z.]+$/.test(host)) return;
+            const bare = hostname.replace(/^www\./, '');
+            if (!bare || bare === 'newtab' || /(^|\.)google\.[a-z.]+$/.test(bare)) return;
+            // The port is part of the site: localhost:18923 and localhost:3000 are different services.
+            const host = url.port ? `${bare}:${url.port}` : bare;
             const visits = Math.max(1, Number(item.visitCount) || 1);
             const stats = hosts.get(host) ?? {
                 host,
@@ -19,12 +21,12 @@ export function rankSites(items: Array<Record<string, unknown>>): RecentSite[] {
                 title: '',
                 count: 0,
                 lastVisit: 0,
-                hostnames: new Map<string, number>(),
+                origins: new Map<string, number>(),
                 rootTitle: ''
             };
             stats.count += visits;
             stats.lastVisit = Math.max(stats.lastVisit, Number(item.lastVisitTime) || 0);
-            stats.hostnames.set(`${url.protocol}//${hostname}`, (stats.hostnames.get(`${url.protocol}//${hostname}`) ?? 0) + visits);
+            stats.origins.set(url.origin, (stats.origins.get(url.origin) ?? 0) + visits);
             const title = typeof item.title === 'string' ? item.title.trim() : '';
             if (url.pathname === '/' && !url.search && title && !stats.rootTitle) stats.rootTitle = title;
             hosts.set(host, stats);
@@ -35,8 +37,8 @@ export function rankSites(items: Array<Record<string, unknown>>): RecentSite[] {
     return [...hosts.values()]
         .sort((left, right) => right.count - left.count || right.lastVisit - left.lastVisit)
         .slice(0, 20)
-        .map(({ hostnames, rootTitle, ...site }) => {
-            const origin = [...hostnames.entries()].sort((left, right) => right[1] - left[1])[0][0];
+        .map(({ origins, rootTitle, ...site }) => {
+            const origin = [...origins.entries()].sort((left, right) => right[1] - left[1])[0][0];
             return { ...site, url: `${origin}/`, title: siteName(site.host, rootTitle) };
         });
 }

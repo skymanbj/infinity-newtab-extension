@@ -18,10 +18,11 @@ import { bindSiteIcons, siteIcon } from './site-icon';
 
 const MAX_ITEMS = 12;
 
-/** Bottom Dock: the bookmarks kept in “全部” (or the most visited sites), then shortcuts into the launchpad. */
+/** Bottom Dock: the most visited sites by default, or the bookmarks kept in “全部”, then launchpad shortcuts. */
 export class HomeDock extends StoreElement {
     protected readonly observedChanges = ['bookmarks', 'settings.layout'] as const;
     private sites: RecentSite[] | null = null;
+    private loadingSites = false;
 
     protected render(): void {
         const { showBookmarks, showRecent, dockSize, dockMagnify, openInNewTab } = appStore.state.settings.layout;
@@ -37,24 +38,22 @@ export class HomeDock extends StoreElement {
         const target = openInNewTab ? 'target="_blank"' : '';
         let items = '';
         if (dockSource === 'recent') {
-            if (!this.sites) void this.loadSites();
-            items = (this.sites ?? []).slice(0, MAX_ITEMS).map((site, index) => `
+            if (!this.sites && !this.loadingSites) void this.loadSites();
+            if (!this.sites) {
+                // History is still scanning: hold the slots so the Dock does not jump when icons arrive.
+                items = Array.from({ length: MAX_ITEMS }, () => '<span class="dock-slot" aria-hidden="true"></span>').join('');
+            } else {
+                const sites = this.sites.slice(0, MAX_ITEMS);
+                items = sites.map((site, index) => `
                 <a class="dock-item" href="${escapeHtml(site.url)}" ${target} rel="noopener noreferrer" data-site-index="${index}" data-liquid-item aria-label="${escapeHtml(site.title)}" draggable="false">
                     ${siteIcon({ url: site.url, name: site.title })}
                     <span class="dock-label glass glass-dark" aria-hidden="true">${escapeHtml(site.title)}</span>
                 </a>`).join('');
+                // History is empty or unavailable: fall back to the pinned bookmarks instead of an empty Dock.
+                if (!sites.length) items = this.bookmarkItems(target);
+            }
         } else {
-            const bookmarks = bookmarksIn(ROOT_FOLDER).slice(0, MAX_ITEMS);
-            items = bookmarks.map((bookmark) => `
-                <a class="dock-item" href="${escapeHtml(bookmark.url)}" ${target} rel="noopener noreferrer" data-bookmark-id="${escapeHtml(bookmark.id)}" data-liquid-item aria-label="${escapeHtml(bookmarkName(bookmark))}" draggable="false">
-                    ${siteIcon({ url: bookmark.url, name: bookmark.name, bookmark })}
-                    <span class="dock-label glass glass-dark" aria-hidden="true">${escapeHtml(bookmarkName(bookmark))}</span>
-                </a>`).join('');
-            if (!bookmarks.length) items = `
-                <button class="dock-item dock-add" type="button" data-liquid-item aria-label="添加书签">
-                    <span class="app-icon app-icon-glass">${ICONS.plus}</span>
-                    <span class="dock-label glass glass-dark" aria-hidden="true">添加书签</span>
-                </button>`;
+            items = this.bookmarkItems(target);
         }
         this.innerHTML = `
             <nav class="glass dock" aria-label="常用书签">
@@ -71,6 +70,20 @@ export class HomeDock extends StoreElement {
             </nav>`;
         bindSiteIcons(this);
         this.bindEvents();
+    }
+
+    private bookmarkItems(target: string): string {
+        const bookmarks = bookmarksIn(ROOT_FOLDER).slice(0, MAX_ITEMS);
+        if (!bookmarks.length) return `
+                <button class="dock-item dock-add" type="button" data-liquid-item aria-label="添加书签">
+                    <span class="app-icon app-icon-glass">${ICONS.plus}</span>
+                    <span class="dock-label glass glass-dark" aria-hidden="true">添加书签</span>
+                </button>`;
+        return bookmarks.map((bookmark) => `
+                <a class="dock-item" href="${escapeHtml(bookmark.url)}" ${target} rel="noopener noreferrer" data-bookmark-id="${escapeHtml(bookmark.id)}" data-liquid-item aria-label="${escapeHtml(bookmarkName(bookmark))}" draggable="false">
+                    ${siteIcon({ url: bookmark.url, name: bookmark.name, bookmark })}
+                    <span class="dock-label glass glass-dark" aria-hidden="true">${escapeHtml(bookmarkName(bookmark))}</span>
+                </a>`).join('');
     }
 
     private bindEvents(): void {
@@ -99,12 +112,13 @@ export class HomeDock extends StoreElement {
     }
 
     private async loadSites(): Promise<void> {
-        this.sites = [];
+        this.loadingSites = true;
         try {
             this.sites = await loadRecentSites();
         } catch {
             this.sites = [];
         }
+        this.loadingSites = false;
         this.render();
     }
 }

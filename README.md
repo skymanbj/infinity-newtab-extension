@@ -74,6 +74,27 @@ Liquid Glass 按 [Liquid Glass in the Browser: Refraction with CSS and SVG](http
 
 此前使用的 `bookmarks`、`folders`、`settings`、`todos`、`recentSearches` 与 `lastBackupPrompt` 数据键继续兼容。
 
+### 从 Infinity 官方扩展迁移
+
+官方扩展（Infinity Pro，备份里 `extVersion` 为 11.x）导出的 `.infinity` 文件和本扩展格式不同：官方是 `{version:"v2", data:{site:{sites:[[...]]}}}`，本扩展是 `{version:"2.0", data:{bookmarks, folders, settings}}`。直接导入官方文件不会报错，但读不到书签，结果是数据被清空，所以必须先转换：
+
+```bash
+node tools/convert-infinity-backup.mjs "infinityBackup-2026-10-22.infinity"
+# 默认在同目录生成 infinity-newtab-backup-<日期>.json
+```
+
+转换规则：
+
+- `data.site.sites` 是官方分页的二维数组，展平为书签并默认全部放进「全部」。加 `--pages` 才按官方分页拆成「第 N 页」文件夹；「全部」是真实文件夹而不是聚合视图，拆页后 Dock 和「全部」标签会空着。
+- 保留官方自定义图标（`bgImage`，`http://` 升级为 `https://`）和原始顺序；图标失效时组件自动回退到 Chrome favicon。
+- `infinity://gmail` 映射为 `https://mail.google.com/`；`infinity://bookmarks`、`infinity://history` 等内置页没有对应网址，跳过并逐条列出。
+- 同一文件夹内的重复网址会去重，与导入时的规则一致。
+- 云端壁纸迁移为 `preset` 远程图片；官方的 `opacity` 是图层不透明度，和这里的暗化不是同一个量，不做换算（`overlay` 取 0）。加 `--no-wallpaper` 可保留默认渐变。
+- 按官方文字颜色推断主题：浅色文字对应深色主题。
+- 待办随备份保留，但本扩展界面不显示；便签与天气缓存不迁移。
+
+转换脚本只读取备份并写出新 JSON，不接触扩展存储。转换完成后在「设置 → 数据 → 导入」里选择生成的 `.json`。
+
 ## 安装
 
 1. 在项目目录构建 TypeScript：
@@ -87,7 +108,7 @@ Liquid Glass 按 [Liquid Glass in the Browser: Refraction with CSS and SVG](http
 3. 点击“加载已解压的扩展程序”，选择本项目目录。
 4. 已经加载过时，点击扩展卡片上的“重新加载”，再打开新标签页。
 
-当前版本应显示为 `3.0.0`。
+当前版本应显示为 `3.0.1`。
 
 ### 运行要求
 
@@ -152,6 +173,14 @@ npm test
 扩展不会把浏览历史发送给第三方图标服务。随机二次元壁纸依赖 `dmoe.cc` 的可用性；下载后的图片只保存在本机。
 
 ## 更新日志
+
+### 3.0.1 - 2026-10-22
+
+- Dock 默认改为显示「常访问」：取最近 30 天浏览最多的网站，更符合 Dock 的使用习惯；可在「设置 → 组件 → Dock 显示」切回固定的书签。
+- 常访问扫描期间用等宽占位块撑住 Dock，图标到达时不再整体跳动。
+- 常访问为空或浏览器未开放历史记录时，自动回退到「全部」里的固定书签，Dock 不再空着。
+- 修复常访问丢失端口的问题：`localhost:18923` 与 `localhost:3000` 现在按不同站点统计，打开的地址也保留端口。
+- 新增 Infinity 官方 `.infinity` 备份转换脚本 `tools/convert-infinity-backup.mjs`，见「从 Infinity 官方扩展迁移」。
 
 ### 3.0.0 - 2026-10-12
 

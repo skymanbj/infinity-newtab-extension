@@ -9,7 +9,7 @@ const initialData = {
     ],
     folders: ['全部', 'POM'],
     settings: {
-        layout: { showClock: true, showSearch: true, showBookmarks: true, showStatus: true, showRecent: true, searchEngine: 'google' },
+        layout: { showClock: true, showSearch: true, showBookmarks: true, showStatus: true, showRecent: true, searchEngine: 'google', dockSource: 'bookmarks' },
         wallpaper: { type: 'gradient', value: '', blur: 0, overlay: 30, idleHide: false },
         appearance: { clockFormat: '24h', dateFormat: 'long', enhancedAnimations: true, theme: 'light' }
     },
@@ -93,7 +93,13 @@ async function openExtension(page, seed = initialData, options = {}) {
     page.on('pageerror', (error) => errors.push(error.message));
     await installChromeMock(page, seed, options);
     await page.goto('/newtab.html');
-    await expect(page.locator('.dock-item[data-bookmark-id]')).toHaveCount(Math.min(12, seed.bookmarks.filter((bookmark) => (bookmark.folder || '全部') === '全部').length));
+    // The Dock follows dockSource: frequent sites by default, pinned bookmarks when chosen or when history is off.
+    const layout = seed.settings?.layout ?? {};
+    if (layout.dockSource === 'bookmarks' || layout.showRecent === false) {
+        await expect(page.locator('.dock-item[data-bookmark-id]')).toHaveCount(Math.min(12, seed.bookmarks.filter((bookmark) => (bookmark.folder || '全部') === '全部').length));
+    } else {
+        await expect(page.locator('.dock-item[data-site-index]').first()).toBeVisible();
+    }
     return errors;
 }
 
@@ -632,7 +638,7 @@ test('imports a version 1 backup and exports version 2', async ({ page }, testIn
             bookmarks: [{ id: 10, name: 'www.v2ex.com', url: 'https://www.v2ex.com/', order: 0 }],
             folders: ['全部'],
             settings: {
-                layout: { showClock: true, showSearch: true, showBookmarks: true },
+                layout: { showClock: true, showSearch: true, showBookmarks: true, dockSource: 'bookmarks' },
                 wallpaper: { type: 'gradient', value: '', blur: 0, overlay: 30 },
                 appearance: { clockFormat: '24h', dateFormat: 'long' }
             },
@@ -808,6 +814,16 @@ test('fades to the clock alone when idle', async ({ page }) => {
     await expect(page.locator('dashboard-header')).toHaveCSS('opacity', '0.85');
     await page.mouse.move(200, 200);
     await expect(page.locator('body')).not.toHaveClass(/is-idle/);
+    expect(errors).toEqual([]);
+});
+
+test('shows frequent sites in the Dock by default', async ({ page }) => {
+    const seed = structuredClone(initialData);
+    delete seed.settings.layout.dockSource;
+    const errors = await openExtension(page, seed);
+    await expect(page.locator('.dock-item[data-site-index]')).toHaveCount(2);
+    await expect(page.locator('.dock-item[data-bookmark-id]')).toHaveCount(0);
+    await expect(page.locator('.dock-slot')).toHaveCount(0);
     expect(errors).toEqual([]);
 });
 

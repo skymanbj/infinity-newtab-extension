@@ -65,9 +65,12 @@ export function bindSiteIcons(root: ParentNode): void {
     });
 }
 
+/** Host with its port, so `localhost:18923` and `localhost:3000` stay distinguishable. */
 export function hostOf(url: string): string {
     try {
-        return new URL(url).hostname.replace(/^www\./, '');
+        const parsed = new URL(url);
+        const host = parsed.hostname.replace(/^www\./, '');
+        return parsed.port ? `${host}:${parsed.port}` : host;
     } catch {
         return '';
     }

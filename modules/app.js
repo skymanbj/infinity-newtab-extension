@@ -169,7 +169,8 @@
         showRecent: booleanOr(layout.showRecent, true),
         openInNewTab: booleanOr(layout.openInNewTab, false),
         searchEngine: searchEngines.includes(String(layout.searchEngine)) ? layout.searchEngine : "google",
-        dockSource: layout.dockSource === "recent" ? "recent" : "bookmarks",
+        /** Missing values (including old backups) follow the new default; only an explicit choice is kept. */
+        dockSource: layout.dockSource === "bookmarks" ? "bookmarks" : "recent",
         dockSize: Math.round(clampNumber(layout.dockSize, 40, 72, 56)),
         dockMagnify: booleanOr(layout.dockMagnify, true),
         saveSearches: booleanOr(layout.saveSearches, true),
@@ -251,7 +252,7 @@
           showRecent: true,
           openInNewTab: false,
           searchEngine: "google",
-          dockSource: "bookmarks",
+          dockSource: "recent",
           dockSize: 56,
           dockMagnify: true,
           saveSearches: true,
@@ -1445,8 +1446,9 @@
         const url = new URL(String(item.url ?? ""));
         if (!["http:", "https:"].includes(url.protocol)) return;
         const hostname = url.hostname.toLowerCase();
-        const host = hostname.replace(/^www\./, "");
-        if (!host || host === "newtab" || /(^|\.)google\.[a-z.]+$/.test(host)) return;
+        const bare = hostname.replace(/^www\./, "");
+        if (!bare || bare === "newtab" || /(^|\.)google\.[a-z.]+$/.test(bare)) return;
+        const host = url.port ? `${bare}:${url.port}` : bare;
         const visits = Math.max(1, Number(item.visitCount) || 1);
         const stats = hosts.get(host) ?? {
           host,
@@ -1454,20 +1456,20 @@
           title: "",
           count: 0,
           lastVisit: 0,
-          hostnames: /* @__PURE__ */ new Map(),
+          origins: /* @__PURE__ */ new Map(),
           rootTitle: ""
         };
         stats.count += visits;
         stats.lastVisit = Math.max(stats.lastVisit, Number(item.lastVisitTime) || 0);
-        stats.hostnames.set(`${url.protocol}//${hostname}`, (stats.hostnames.get(`${url.protocol}//${hostname}`) ?? 0) + visits);
+        stats.origins.set(url.origin, (stats.origins.get(url.origin) ?? 0) + visits);
         const title = typeof item.title === "string" ? item.title.trim() : "";
         if (url.pathname === "/" && !url.search && title && !stats.rootTitle) stats.rootTitle = title;
         hosts.set(host, stats);
       } catch {
       }
     });
-    return [...hosts.values()].sort((left, right) => right.count - left.count || right.lastVisit - left.lastVisit).slice(0, 20).map(({ hostnames, rootTitle, ...site }) => {
-      const origin = [...hostnames.entries()].sort((left, right) => right[1] - left[1])[0][0];
+    return [...hosts.values()].sort((left, right) => right.count - left.count || right.lastVisit - left.lastVisit).slice(0, 20).map(({ origins, rootTitle, ...site }) => {
+      const origin = [...origins.entries()].sort((left, right) => right[1] - left[1])[0][0];
       return { ...site, url: `${origin}/`, title: siteName(site.host, rootTitle) };
     });
   }
@@ -1648,7 +1650,9 @@
   }
   function hostOf(url) {
     try {
-      return new URL(url).hostname.replace(/^www\./, "");
+      const parsed = new URL(url);
+      const host = parsed.hostname.replace(/^www\./, "");
+      return parsed.port ? `${host}:${parsed.port}` : host;
     } catch {
       return "";
     }
@@ -2068,6 +2072,7 @@
       HomeDock = class extends StoreElement {
         observedChanges = ["bookmarks", "settings.layout"];
         sites = null;
+        loadingSites = false;
         render() {
           const { showBookmarks, showRecent, dockSize, dockMagnify, openInNewTab: openInNewTab2 } = appStore.state.settings.layout;
           const dockSource = showRecent ? appStore.state.settings.layout.dockSource : "bookmarks";
@@ -2081,24 +2086,20 @@
           const target = openInNewTab2 ? 'target="_blank"' : "";
           let items = "";
           if (dockSource === "recent") {
-            if (!this.sites) void this.loadSites();
-            items = (this.sites ?? []).slice(0, MAX_ITEMS).map((site, index) => `
+            if (!this.sites && !this.loadingSites) void this.loadSites();
+            if (!this.sites) {
+              items = Array.from({ length: MAX_ITEMS }, () => '<span class="dock-slot" aria-hidden="true"></span>').join("");
+            } else {
+              const sites = this.sites.slice(0, MAX_ITEMS);
+              items = sites.map((site, index) => `
                 <a class="dock-item" href="${escapeHtml(site.url)}" ${target} rel="noopener noreferrer" data-site-index="${index}" data-liquid-item aria-label="${escapeHtml(site.title)}" draggable="false">
                     ${siteIcon({ url: site.url, name: site.title })}
                     <span class="dock-label glass glass-dark" aria-hidden="true">${escapeHtml(site.title)}</span>
                 </a>`).join("");
+              if (!sites.length) items = this.bookmarkItems(target);
+            }
           } else {
-            const bookmarks = bookmarksIn(ROOT_FOLDER).slice(0, MAX_ITEMS);
-            items = bookmarks.map((bookmark) => `
-                <a class="dock-item" href="${escapeHtml(bookmark.url)}" ${target} rel="noopener noreferrer" data-bookmark-id="${escapeHtml(bookmark.id)}" data-liquid-item aria-label="${escapeHtml(bookmarkName(bookmark))}" draggable="false">
-                    ${siteIcon({ url: bookmark.url, name: bookmark.name, bookmark })}
-                    <span class="dock-label glass glass-dark" aria-hidden="true">${escapeHtml(bookmarkName(bookmark))}</span>
-                </a>`).join("");
-            if (!bookmarks.length) items = `
-                <button class="dock-item dock-add" type="button" data-liquid-item aria-label="\u6DFB\u52A0\u4E66\u7B7E">
-                    <span class="app-icon app-icon-glass">${ICONS.plus}</span>
-                    <span class="dock-label glass glass-dark" aria-hidden="true">\u6DFB\u52A0\u4E66\u7B7E</span>
-                </button>`;
+            items = this.bookmarkItems(target);
           }
           this.innerHTML = `
             <nav class="glass dock" aria-label="\u5E38\u7528\u4E66\u7B7E">
@@ -2115,6 +2116,19 @@
             </nav>`;
           bindSiteIcons(this);
           this.bindEvents();
+        }
+        bookmarkItems(target) {
+          const bookmarks = bookmarksIn(ROOT_FOLDER).slice(0, MAX_ITEMS);
+          if (!bookmarks.length) return `
+                <button class="dock-item dock-add" type="button" data-liquid-item aria-label="\u6DFB\u52A0\u4E66\u7B7E">
+                    <span class="app-icon app-icon-glass">${ICONS.plus}</span>
+                    <span class="dock-label glass glass-dark" aria-hidden="true">\u6DFB\u52A0\u4E66\u7B7E</span>
+                </button>`;
+          return bookmarks.map((bookmark) => `
+                <a class="dock-item" href="${escapeHtml(bookmark.url)}" ${target} rel="noopener noreferrer" data-bookmark-id="${escapeHtml(bookmark.id)}" data-liquid-item aria-label="${escapeHtml(bookmarkName(bookmark))}" draggable="false">
+                    ${siteIcon({ url: bookmark.url, name: bookmark.name, bookmark })}
+                    <span class="dock-label glass glass-dark" aria-hidden="true">${escapeHtml(bookmarkName(bookmark))}</span>
+                </a>`).join("");
         }
         bindEvents() {
           this.querySelector(".dock-recent")?.addEventListener("click", () => this.openLaunchpad("recent"));
@@ -2140,12 +2154,13 @@
           this.dispatchEvent(new CustomEvent("open-launchpad", { bubbles: true, composed: true, detail: { view } }));
         }
         async loadSites() {
-          this.sites = [];
+          this.loadingSites = true;
           try {
             this.sites = await loadRecentSites();
           } catch {
             this.sites = [];
           }
+          this.loadingSites = false;
           this.render();
         }
       };
@@ -3657,7 +3672,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 ${toggleRow("showRecent", "\u5E38\u8BBF\u95EE\u7F51\u7AD9", "\u6839\u636E\u672C\u673A\u6700\u8FD1 30 \u5929\u7684\u6D4F\u89C8\u8BB0\u5F55\u751F\u6210\uFF0C\u51FA\u73B0\u5728 Dock\u3001\u542F\u52A8\u53F0\u548C\u641C\u7D22\u4E2D")}
             `)}
             ${group("Dock", `
-                ${segmentRow("dockSource", "\u663E\u793A\u7684\u4E66\u7B7E", layout.dockSource, [["bookmarks", "\u56FA\u5B9A\u7684\u4E66\u7B7E"], ["recent", "\u5E38\u8BBF\u95EE"]], "\u56FA\u5B9A\u7684\u4E66\u7B7E\u5C31\u662F\u201C\u5168\u90E8\u201D\u91CC\u7684\u4E66\u7B7E\uFF0C\u53EF\u5728\u542F\u52A8\u53F0\u4E2D\u62D6\u52A8\u6392\u5E8F", "showBookmarks showRecent")}
+                ${segmentRow("dockSource", "Dock \u663E\u793A", layout.dockSource, [["recent", "\u5E38\u8BBF\u95EE"], ["bookmarks", "\u56FA\u5B9A\u7684\u4E66\u7B7E"]], "\u5E38\u8BBF\u95EE\u53D6\u6700\u8FD1 30 \u5929\u6D4F\u89C8\u6700\u591A\u7684\u7F51\u7AD9\uFF1B\u56FA\u5B9A\u7684\u4E66\u7B7E\u5C31\u662F\u201C\u5168\u90E8\u201D\u91CC\u7684\u4E66\u7B7E\uFF0C\u53EF\u5728\u542F\u52A8\u53F0\u4E2D\u62D6\u52A8\u6392\u5E8F", "showBookmarks showRecent")}
                 ${rangeRow("dockSize", "\u56FE\u6807\u5927\u5C0F", layout.dockSize, 40, 72, "", "showBookmarks")}
                 ${toggleRow("dockMagnify", "\u60AC\u505C\u653E\u5927", "", "showBookmarks")}
                 ${toggleRow("openInNewTab", "\u5728\u65B0\u6807\u7B7E\u9875\u6253\u5F00\u4E66\u7B7E")}

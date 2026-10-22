@@ -15,7 +15,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         showRecent: true,
         openInNewTab: false,
         searchEngine: 'google',
-        dockSource: 'bookmarks',
+        dockSource: 'recent',
         dockSize: 56,
         dockMagnify: true,
         saveSearches: true,
@@ -132,7 +132,8 @@ export function sanitizeSettings(value: unknown): AppSettings {
             searchEngine: searchEngines.includes(String(layout.searchEngine))
                 ? layout.searchEngine as LayoutSettings['searchEngine']
                 : 'google',
-            dockSource: layout.dockSource === 'recent' ? 'recent' : 'bookmarks',
+            /** Missing values (including old backups) follow the new default; only an explicit choice is kept. */
+            dockSource: layout.dockSource === 'bookmarks' ? 'bookmarks' : 'recent',
             dockSize: Math.round(clampNumber(layout.dockSize, 40, 72, 56)),
             dockMagnify: booleanOr(layout.dockMagnify, true),
             saveSearches: booleanOr(layout.saveSearches, true),

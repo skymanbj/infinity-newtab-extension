@@ -732,6 +732,15 @@ home-dock {
     transition: transform 450ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/* Holds the Dock's width while the history scan for frequent sites is still running. */
+.dock-slot {
+    width: var(--dock-size);
+    height: var(--dock-size);
+    flex: none;
+    border-radius: calc(var(--dock-size) * 0.25);
+    background: var(--hairline);
+}
+
 /* The icon grows inside its own box, so the shared lens keeps a stable outline. */
 .is-magnifying .dock-item:hover .app-icon,
 .is-magnifying .dock-item:focus-visible .app-icon {

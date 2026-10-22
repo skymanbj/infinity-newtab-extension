@@ -2,3 +2,11 @@
 node_modules/
 playwright-report/
 test-results/
+tests/.e2e-*/
+tests/.probe.cjs
+
+# 个人书签备份：含内网地址与带 token 的链接，只保留在本地
+infinity-newtab-backup-*.json
+
+# 本地工作记忆，不属于项目源码
+.workbuddy-ai/

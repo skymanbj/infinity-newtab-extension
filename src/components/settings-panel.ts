@@ -125,7 +125,7 @@ export class SettingsPanel extends StoreElement {
                 ${toggleRow('showRecent', '常访问网站', '根据本机最近 30 天的浏览记录生成，出现在 Dock、启动台和搜索中')}
             `)}
             ${group('Dock', `
-                ${segmentRow('dockSource', '显示的书签', layout.dockSource, [['bookmarks', '固定的书签'], ['recent', '常访问']], '固定的书签就是“全部”里的书签，可在启动台中拖动排序', 'showBookmarks showRecent')}
+                ${segmentRow('dockSource', 'Dock 显示', layout.dockSource, [['recent', '常访问'], ['bookmarks', '固定的书签']], '常访问取最近 30 天浏览最多的网站；固定的书签就是“全部”里的书签，可在启动台中拖动排序', 'showBookmarks showRecent')}
                 ${rangeRow('dockSize', '图标大小', layout.dockSize, 40, 72, '', 'showBookmarks')}
                 ${toggleRow('dockMagnify', '悬停放大', '', 'showBookmarks')}
                 ${toggleRow('openInNewTab', '在新标签页打开书签')}

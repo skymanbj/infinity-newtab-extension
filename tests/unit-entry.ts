@@ -4,6 +4,7 @@ import { BOOKMARK_CHUNKS_KEY, bookmarkChunkKey } from '../src/core/bookmark-stor
 import { rankSites } from '../src/core/history';
 import { AppStore } from '../src/core/store';
 import { convexSquircle, lipSquircle, precalculateDisplacements } from '../src/components/liquid-optics';
+import { hostOf } from '../src/components/site-icon';
 import { bookmarkIcon, bookmarkIconCanUpgrade, bookmarkIconFallback, bookmarkIconIsRaster, bookmarkIconSrcSet, faviconUrl, normalizeUrl } from '../src/core/utils';
 
 const syncData: Record<string, unknown> = {};
@@ -66,6 +67,8 @@ assert.equal(sanitizeSettings({ appearance: { theme: 'light' } }).appearance.the
 assert.equal(sanitizeSettings({ layout: { openInNewTab: false }, appearance: { theme: 'light' } }).appearance.theme, 'light', '2.5 之后主动选择的深色文字必须保留');
 assert.equal(sanitizeSettings({ appearance: { theme: 'dark' } }).appearance.theme, 'dark');
 assert.equal(sanitizeSettings({ wallpaper: { type: 'local', value: 'online-123' } }).wallpaper.value, 'online-123', '缓存的在线壁纸需要保留版本号以触发刷新');
+assert.equal(sanitizeSettings({}).layout.dockSource, 'recent', 'Dock 默认显示常访问');
+assert.equal(sanitizeSettings({ layout: { dockSource: 'bookmarks' } }).layout.dockSource, 'bookmarks', '主动选择的固定书签必须保留');
 
 const unsafe = sanitizeImportedData({
     bookmarks: [{ id: 1, name: 'bad', url: 'javascript:alert(1)', icon: 'javascript:alert(2)' }],
@@ -123,6 +126,20 @@ assert.equal(ranked[0].count, 13);
 assert.equal(ranked[0].title, 'YouTube', '首页标题可用时应作为网站名');
 assert.equal(ranked[1].title, 'v2ex.com', '没有首页标题时显示完整域名，而不是只取第一段');
 assert.equal(rankSites([{ url: 'https://news.ycombinator.com/item?id=1', visitCount: 3 }])[0].title, 'news.ycombinator.com');
+
+const localSites = rankSites([
+    { url: 'http://localhost:18923/#/dashboard', title: '本地面板', visitCount: 6, lastVisitTime: 200 },
+    { url: 'http://localhost:3000/', title: 'Vite', visitCount: 3, lastVisitTime: 100 },
+    { url: 'http://localhost:3000/app', visitCount: 1, lastVisitTime: 50 }
+]);
+assert.equal(localSites.length, 2, '不同端口的本地服务必须分开统计');
+assert.equal(localSites[0].host, 'localhost:18923', 'host 需要保留端口');
+assert.equal(localSites[0].url, 'http://localhost:18923/', '端口必须保留在打开的地址里');
+assert.equal(localSites[1].url, 'http://localhost:3000/', '同一端口的不同路径合并到一个站点');
+assert.equal(localSites[1].count, 4);
+assert.equal(rankSites([{ url: 'https://example.com:8443/app', visitCount: 2 }])[0].url, 'https://example.com:8443/');
+assert.equal(hostOf('http://localhost:18923/#/x'), 'localhost:18923', 'hostOf 也要带上端口');
+assert.equal(hostOf('https://www.youtube.com/watch'), 'youtube.com');
 
 const opticalSamples = precalculateDisplacements(55, 63, convexSquircle, 1.5, 128);
 assert.equal(opticalSamples.length, 128, '折射场必须覆盖 SVG 颜色通道的 128 个径向取样位置');
