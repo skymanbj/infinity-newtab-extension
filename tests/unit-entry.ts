@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { sanitizeImportedData, sanitizeSettings } from '../src/core/backup';
 import { BOOKMARK_CHUNKS_KEY, bookmarkChunkKey } from '../src/core/bookmark-storage';
 import { rankSites } from '../src/core/history';
+import { sharedIconUrls, siteKeyOf, stripSharedIcons } from '../src/core/icon-audit';
 import { AppStore } from '../src/core/store';
 import { convexSquircle, lipSquircle, precalculateDisplacements } from '../src/components/liquid-optics';
 import { hostOf } from '../src/components/site-icon';
@@ -140,6 +141,24 @@ assert.equal(localSites[1].count, 4);
 assert.equal(rankSites([{ url: 'https://example.com:8443/app', visitCount: 2 }])[0].url, 'https://example.com:8443/');
 assert.equal(hostOf('http://localhost:18923/#/x'), 'localhost:18923', 'hostOf 也要带上端口');
 assert.equal(hostOf('https://www.youtube.com/watch'), 'youtube.com');
+
+// 图标串号：官方 user-share-icon 会把同一个 ID 解析成同一张图，跨站共用即坏数据。
+const jdIcon = 'https://infinityicon.infinitynewtab.com/user-share-icon/cee009549b352def723ba09d6da4b742.png';
+const iconBookmarks = [
+    { id: 1, name: 'Telegram', url: 'https://web.telegram.org/k', icon: jdIcon, folder: '全部', order: 0 },
+    { id: 2, name: 'Mistral', url: 'https://console.mistral.ai/home', icon: jdIcon, folder: '全部', order: 1 },
+    { id: 3, name: 'B 站', url: 'https://www.bilibili.com/', icon: 'https://www.bilibili.com/favicon.ico', folder: '全部', order: 2 },
+    { id: 4, name: '番剧', url: 'https://www.bilibili.com/anime/', icon: 'https://www.bilibili.com/favicon.ico', folder: '全部', order: 3 },
+    { id: 5, name: '谷歌', url: 'https://www.google.com/', icon: '', folder: '全部', order: 4 }
+];
+assert.equal(sharedIconUrls(iconBookmarks).size, 1, '只有跨站复用的图标才算坏数据');
+const stripped = stripSharedIcons(iconBookmarks);
+assert.equal(stripped.cleared, 2);
+assert.equal(stripped.bookmarks[0].icon, '', '跨站共用的图标必须清空');
+assert.equal(stripped.bookmarks[2].icon, 'https://www.bilibili.com/favicon.ico', '同一站点的不同页面共用图标是正常的');
+assert.equal(siteKeyOf('https://docs.google.com/x'), 'google.com');
+assert.equal(siteKeyOf('https://www.bbc.co.uk/news'), 'bbc.co.uk', '二级公共后缀不能只取最后两段');
+assert.equal(siteKeyOf('not a url'), '');
 
 const opticalSamples = precalculateDisplacements(55, 63, convexSquircle, 1.5, 128);
 assert.equal(opticalSamples.length, 128, '折射场必须覆盖 SVG 颜色通道的 128 个径向取样位置');

@@ -174,6 +174,7 @@ export class SettingsPanel extends StoreElement {
             ${group('备份', `
                 ${infoRow('导出备份', '书签、设置和本地壁纸，一个 JSON 文件', '<button class="pill-button export-data" type="button" data-liquid-item>导出…</button>')}
                 ${infoRow('从备份恢复', '支持 1.0 / 2.0 备份，会覆盖当前数据', '<label class="pill-button import-data" data-liquid-item>导入…<input type="file" accept="application/json,.json" hidden></label>')}
+                ${infoRow('修复图标', '清掉被多个不同站点共用的错误图标，改回按域名自动获取', '<button class="pill-button fix-icons" type="button" data-liquid-item>修复…</button>')}
                 ${toggleRow('backupReminder', '每月提醒我备份')}
             `)}
             ${group('', `
@@ -256,7 +257,18 @@ export class SettingsPanel extends StoreElement {
             input.value = '';
             if (file) void this.importData(file);
         });
+        this.querySelector('.fix-icons')?.addEventListener('click', () => void this.fixIcons());
         this.querySelector('.reset-data')?.addEventListener('click', () => void this.resetData());
+    }
+
+    private async fixIcons(): Promise<void> {
+        try {
+            const cleared = await appStore.clearSharedIcons();
+            if (cleared) notify(`已修复 ${cleared} 个图标`, 'success');
+            else notify('没有发现被多个站点共用的图标', 'info');
+        } catch (error) {
+            notifyError(error, '修复图标失败');
+        }
     }
 
     private selectPane(target: Pane): void {

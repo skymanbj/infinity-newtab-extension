@@ -20,12 +20,14 @@ export class BookmarkDialog extends HTMLElement {
     }
 
     private readonly onOpen = (event: CustomEvent<DialogDetail>): void => {
-        this.editing = event.detail.bookmark;
         this.open(event.detail);
     };
 
     private open({ bookmark, folder = '全部', draft }: DialogDetail): void {
+        // close() clears `editing`, so the mode has to be restored afterwards,
+        // otherwise “编辑” silently turns into “新增” and duplicates the bookmark.
         this.close();
+        this.editing = bookmark;
         const selected = bookmark?.folder ?? folder;
         const title = bookmark ? '编辑书签' : '添加书签';
         this.innerHTML = `

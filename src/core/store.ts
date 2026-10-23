@@ -6,6 +6,7 @@ import {
     staleBookmarkKeys,
     storedChunkCount
 } from './bookmark-storage';
+import { sharedIconUrls } from './icon-audit';
 import { storageClear, storageGet, storageRemove, storageSet } from './storage';
 import type { AppSettings, AppState, Bookmark, SettingsSection } from './types';
 import { cleanText, normalizeUrl, sanitizeRemoteUrl } from './utils';
@@ -120,6 +121,21 @@ export class AppStore extends EventTarget {
             draft.bookmarks[index] = next;
             normalizeOrders(draft.bookmarks);
         }, ['bookmarks']);
+    }
+
+    /** 清掉被多个不同站点共用的远程图标（来源数据串号），返回清理条数。 */
+    async clearSharedIcons(): Promise<number> {
+        const shared = sharedIconUrls(this.stateValue.bookmarks);
+        if (!shared.size) return 0;
+        let cleared = 0;
+        await this.commit((draft) => {
+            draft.bookmarks = draft.bookmarks.map((bookmark) => {
+                if (!shared.has(bookmark.icon)) return bookmark;
+                cleared += 1;
+                return { ...bookmark, icon: '' };
+            });
+        }, ['bookmarks']);
+        return cleared;
     }
 
     async deleteBookmark(id: Bookmark['id']): Promise<void> {

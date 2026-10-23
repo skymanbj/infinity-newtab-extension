@@ -337,6 +337,37 @@
     }
   });
 
+  // src/core/icon-audit.ts
+  function siteKeyOf(url) {
+    try {
+      const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+      const parts = host.split(".");
+      const take = parts.length >= 3 && TWO_LEVEL_SUFFIX.test(parts.slice(-2).join(".")) ? 3 : 2;
+      return parts.slice(-take).join(".");
+    } catch {
+      return "";
+    }
+  }
+  function sharedIconUrls(bookmarks) {
+    const usage = /* @__PURE__ */ new Map();
+    bookmarks.forEach((bookmark) => {
+      if (!bookmark.icon.startsWith("http")) return;
+      const sites = usage.get(bookmark.icon) ?? /* @__PURE__ */ new Set();
+      sites.add(siteKeyOf(bookmark.url));
+      usage.set(bookmark.icon, sites);
+    });
+    return new Set(
+      [...usage.entries()].filter(([, sites]) => sites.size > 1).map(([icon2]) => icon2)
+    );
+  }
+  var TWO_LEVEL_SUFFIX;
+  var init_icon_audit = __esm({
+    "src/core/icon-audit.ts"() {
+      "use strict";
+      TWO_LEVEL_SUFFIX = /^(?:co|com|net|org|gov|edu|ac|or|ne|go)\.[a-z]{2}$/;
+    }
+  });
+
   // src/core/storage.ts
   function area(name) {
     return chrome.storage[name];
@@ -446,6 +477,7 @@
       "use strict";
       init_backup();
       init_bookmark_storage();
+      init_icon_audit();
       init_storage();
       init_utils();
       ALL_CHANGES = [
@@ -537,6 +569,20 @@
             draft.bookmarks[index] = next;
             normalizeOrders(draft.bookmarks);
           }, ["bookmarks"]);
+        }
+        /** 清掉被多个不同站点共用的远程图标（来源数据串号），返回清理条数。 */
+        async clearSharedIcons() {
+          const shared = sharedIconUrls(this.stateValue.bookmarks);
+          if (!shared.size) return 0;
+          let cleared = 0;
+          await this.commit((draft) => {
+            draft.bookmarks = draft.bookmarks.map((bookmark) => {
+              if (!shared.has(bookmark.icon)) return bookmark;
+              cleared += 1;
+              return { ...bookmark, icon: "" };
+            });
+          }, ["bookmarks"]);
+          return cleared;
         }
         async deleteBookmark(id) {
           await this.commit((draft) => {
@@ -1330,11 +1376,11 @@
           this.close();
         }
         onOpen = (event) => {
-          this.editing = event.detail.bookmark;
           this.open(event.detail);
         };
         open({ bookmark, folder = "\u5168\u90E8", draft }) {
           this.close();
+          this.editing = bookmark;
           const selected = bookmark?.folder ?? folder;
           const title = bookmark ? "\u7F16\u8F91\u4E66\u7B7E" : "\u6DFB\u52A0\u4E66\u7B7E";
           this.innerHTML = `
@@ -3719,6 +3765,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             ${group("\u5907\u4EFD", `
                 ${infoRow("\u5BFC\u51FA\u5907\u4EFD", "\u4E66\u7B7E\u3001\u8BBE\u7F6E\u548C\u672C\u5730\u58C1\u7EB8\uFF0C\u4E00\u4E2A JSON \u6587\u4EF6", '<button class="pill-button export-data" type="button" data-liquid-item>\u5BFC\u51FA\u2026</button>')}
                 ${infoRow("\u4ECE\u5907\u4EFD\u6062\u590D", "\u652F\u6301 1.0 / 2.0 \u5907\u4EFD\uFF0C\u4F1A\u8986\u76D6\u5F53\u524D\u6570\u636E", '<label class="pill-button import-data" data-liquid-item>\u5BFC\u5165\u2026<input type="file" accept="application/json,.json" hidden></label>')}
+                ${infoRow("\u4FEE\u590D\u56FE\u6807", "\u6E05\u6389\u88AB\u591A\u4E2A\u4E0D\u540C\u7AD9\u70B9\u5171\u7528\u7684\u9519\u8BEF\u56FE\u6807\uFF0C\u6539\u56DE\u6309\u57DF\u540D\u81EA\u52A8\u83B7\u53D6", '<button class="pill-button fix-icons" type="button" data-liquid-item>\u4FEE\u590D\u2026</button>')}
                 ${toggleRow("backupReminder", "\u6BCF\u6708\u63D0\u9192\u6211\u5907\u4EFD")}
             `)}
             ${group("", `
@@ -3794,7 +3841,17 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             input.value = "";
             if (file) void this.importData(file);
           });
+          this.querySelector(".fix-icons")?.addEventListener("click", () => void this.fixIcons());
           this.querySelector(".reset-data")?.addEventListener("click", () => void this.resetData());
+        }
+        async fixIcons() {
+          try {
+            const cleared = await appStore.clearSharedIcons();
+            if (cleared) notify(`\u5DF2\u4FEE\u590D ${cleared} \u4E2A\u56FE\u6807`, "success");
+            else notify("\u6CA1\u6709\u53D1\u73B0\u88AB\u591A\u4E2A\u7AD9\u70B9\u5171\u7528\u7684\u56FE\u6807", "info");
+          } catch (error) {
+            notifyError(error, "\u4FEE\u590D\u56FE\u6807\u5931\u8D25");
+          }
         }
         selectPane(target) {
           this.activePane = target;

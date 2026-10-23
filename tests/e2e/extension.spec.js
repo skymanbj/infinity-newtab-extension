@@ -849,3 +849,46 @@ test('keeps history out of every view when frequent sites are turned off', async
     expect((await page.evaluate(() => window.__readMockSync())).settings.layout.showRecent).toBe(true);
     expect(errors).toEqual([]);
 });
+
+test('edits a bookmark in place instead of duplicating it', async ({ page }) => {
+    const errors = await openExtension(page);
+    await openLaunchpad(page);
+    await page.locator('.launchpad .bookmark-tile[data-bookmark-id]').first().click({ button: 'right' });
+    await page.getByText('编辑…', { exact: true }).click();
+    const dialog = page.locator('.bookmark-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('input[name="name"]')).toHaveValue('www.google.com');
+    await dialog.locator('input[name="name"]').fill('Google 搜索');
+    await dialog.locator('details.field-advanced summary').click();
+    await dialog.locator('input[name="icon"]').fill('https://example.com/google.png');
+    await dialog.getByRole('button', { name: '保存' }).click();
+    await expect(dialog).toHaveCount(0);
+
+    const saved = await page.evaluate(() => window.__readMockSync().bookmarks);
+    expect(saved).toHaveLength(3);
+    expect(saved[0]).toMatchObject({ name: 'Google 搜索', icon: 'https://example.com/google.png' });
+    await expect(page.locator('.launchpad .bookmark-tile[data-bookmark-id]').first()).toContainText('Google 搜索');
+    expect(errors).toEqual([]);
+});
+
+test('clears icons that unrelated sites share by mistake', async ({ page }) => {
+    const shared = 'https://infinityicon.infinitynewtab.com/user-share-icon/cee009549b352def723ba09d6da4b742.png';
+    const seed = structuredClone(initialData);
+    seed.bookmarks[0].icon = shared;
+    seed.bookmarks[1].icon = shared;
+    // 同一站点的两条书签共用图标是正常的，不能被清掉。
+    seed.bookmarks[2].icon = 'https://www.bilibili.com/favicon.ico';
+    seed.bookmarks.push({ id: 4, name: 'Bilibili 番剧', url: 'https://www.bilibili.com/anime/', icon: 'https://www.bilibili.com/favicon.ico', folder: 'POM', order: 1 });
+
+    const errors = await openExtension(page, seed);
+    await openSettings(page, 'data');
+    await page.locator('.fix-icons').click();
+    await expect(page.locator('.toast')).toContainText('已修复 2 个图标');
+
+    const saved = await page.evaluate(() => window.__readMockSync().bookmarks);
+    expect(saved.find((bookmark) => bookmark.name === 'www.google.com').icon).toBe('');
+    expect(saved.find((bookmark) => bookmark.name === 'GitHub').icon).toBe('');
+    expect(saved.find((bookmark) => bookmark.name === 'Bilibili').icon).toBe('https://www.bilibili.com/favicon.ico');
+    expect(saved.find((bookmark) => bookmark.name === 'Bilibili 番剧').icon).toBe('https://www.bilibili.com/favicon.ico');
+    expect(errors).toEqual([]);
+});

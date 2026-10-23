@@ -3,6 +3,7 @@ node_modules/
 playwright-report/
 test-results/
 tests/.e2e-*/
+tests/.probe-out-*/
 tests/.probe.cjs
 
 # 个人书签备份：含内网地址与带 token 的链接，只保留在本地

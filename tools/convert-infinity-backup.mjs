@@ -99,6 +99,42 @@ function canonical(url) {
     return `${parsed.origin}${parsed.pathname}`.toLowerCase();
 }
 
+/** 粗粒度站点键：同一站点的不同子域视为一个，用于判断图标是否被跨站复用。 */
+function siteKey(url) {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    const parts = host.split('.');
+    // 二级后缀（co.uk、com.cn 等）取三段，避免把不同站点误判成同一站。
+    const twoLevel = /^(?:co|com|net|org|gov|edu|ac|or|ne|go)\.[a-z]{2}$/;
+    const take = parts.length >= 3 && twoLevel.test(parts.slice(-2).join('.')) ? 3 : 2;
+    return parts.slice(-take).join('.');
+}
+
+/**
+ * 官方备份里出现过同一个图标 URL 被十几个毫不相关的站点共用的情况
+ * （user-share-icon 的 ID 串号，现在解析出来是京东的 logo）。
+ * 这种图标一定是错的，清空后交给扩展按域名取 favicon，比留着错误图标好。
+ */
+function dropSharedIcons(bookmarks, report) {
+    const usage = new Map();
+    bookmarks.forEach((bookmark) => {
+        if (!bookmark.icon) return;
+        const sites = usage.get(bookmark.icon) ?? new Set();
+        sites.add(siteKey(bookmark.url));
+        usage.set(bookmark.icon, sites);
+    });
+    const broken = new Set(
+        [...usage.entries()].filter(([, sites]) => sites.size > 1).map(([icon]) => icon)
+    );
+    if (!broken.size) return;
+    const dropped = [];
+    bookmarks.forEach((bookmark) => {
+        if (!bookmark.icon || !broken.has(bookmark.icon)) return;
+        dropped.push(bookmark.name);
+        bookmark.icon = '';
+    });
+    report.sharedIcons = { count: broken.size, bookmarks: dropped.length, sample: dropped.slice(0, 5) };
+}
+
 /** 官方壁纸是云端 https 地址，本扩展用 preset + 远程地址即可直接显示。 */
 function mapWallpaper(wallpaper) {
     if (!wallpaper || typeof wallpaper !== 'object') return null;
@@ -133,7 +169,7 @@ function convert(raw, options) {
         throw new Error('备份里没有 site.sites，无法读取书签');
     }
 
-    const report = { total: 0, kept: 0, duplicates: [], skipped: [], folders: [], multiPage: pages.length > 1 };
+    const report = { total: 0, kept: 0, duplicates: [], skipped: [], folders: [], sharedIcons: null, multiPage: pages.length > 1 };
     const bookmarks = [];
     const seen = new Set();
     const folders = ['全部'];
@@ -180,6 +216,8 @@ function convert(raw, options) {
 
     const setting = raw.data?.setting?.setting ?? {};
     const wallpaper = options.wallpaper ? mapWallpaper(raw.data?.wallpaper) : null;
+
+    dropSharedIcons(bookmarks, report);
 
     const settings = {
         layout: {
@@ -298,6 +336,9 @@ function main() {
         report.duplicates.forEach((entry) => console.log(`  - 重复 ${entry.name}：${entry.url}`));
     }
     console.log(`文件夹：${report.folders.join(' / ')}`);
+    if (report.sharedIcons) {
+        console.log(`图标：${report.sharedIcons.count} 个图标被不同站点共用（源数据串号），已改为按域名自动取 favicon，涉及 ${report.sharedIcons.bookmarks} 条`);
+    }
     if (options.splitPages && report.multiPage) {
         console.log('注意：「全部」为空，Dock 和「全部」标签会空着，需要在启动台里拖动书签补进去。');
     }
