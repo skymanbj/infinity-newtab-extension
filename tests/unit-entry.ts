@@ -198,6 +198,25 @@ async function testTransactions(): Promise<void> {
         '同文件夹排序不能复制数据'
     );
 
+    // 标签排序：「全部」固定在第一位，其余可任意调整。
+    await store.addFolder('工作');
+    await store.addFolder('娱乐');
+    assert.deepEqual(store.state.folders, ['全部', 'POM', '工作', '娱乐']);
+    await store.moveFolder('娱乐', 0);
+    assert.deepEqual(store.state.folders, ['全部', '娱乐', 'POM', '工作'], '标签顺序要能整体调整');
+    assert.deepEqual(syncData.folders, ['全部', '娱乐', 'POM', '工作'], '新顺序要写回同步存储');
+    assert.equal(await store.moveFolder('娱乐', 0), false, '位置没变时不应重复写入');
+    assert.equal(await store.moveFolder('全部', 2), false, '「全部」固定在第一位');
+    assert.equal(await store.moveFolder('不存在', 0), false, '未知文件夹不应改变顺序');
+    await store.moveFolder('POM', 99);
+    assert.deepEqual(store.state.folders, ['全部', '娱乐', '工作', 'POM'], '越界下标要收敛到末尾');
+    await store.moveFolder('POM', -5);
+    assert.deepEqual(store.state.folders, ['全部', 'POM', '娱乐', '工作'], '负下标要收敛到开头');
+    await store.deleteFolder('POM');
+    await store.deleteFolder('工作');
+    await store.deleteFolder('娱乐');
+    assert.deepEqual(store.state.folders, ['全部'], '清理测试用文件夹');
+
     const extensionBookmark = await store.addBookmark({ name: '扩展页面', url: extensionPage, icon: '', folder: '全部' });
     assert.equal(extensionBookmark.url, extensionPage, '新增书签应接受 chrome-extension 页面');
 

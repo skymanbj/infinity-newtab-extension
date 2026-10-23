@@ -1204,6 +1204,33 @@ body.theme-light .launchpad-backdrop {
     outline-offset: -2px;
 }
 
+/* 标签拖动排序：用左右两条竖线标出会插到哪一边。 */
+.launchpad-tab[draggable='true'] {
+    cursor: grab;
+}
+
+.launchpad-tab.is-dragging {
+    opacity: 0.45;
+    cursor: grabbing;
+}
+
+.launchpad-tab.drop-before {
+    box-shadow: inset 2px 0 0 var(--fg);
+}
+
+.launchpad-tab.drop-after {
+    box-shadow: inset -2px 0 0 var(--fg);
+}
+
+.launchpad-tab.is-active.drop-before,
+.launchpad-tab.is-active.drop-after {
+    box-shadow: inset 2px 0 0 var(--fg), 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.launchpad-tab.is-active.drop-after {
+    box-shadow: inset -2px 0 0 var(--fg), 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
 .launchpad-done {
     position: absolute;
     top: 40px;

@@ -79,6 +79,25 @@ export class AppStore extends EventTarget {
         return true;
     }
 
+    /**
+     * 把文件夹挪到「全部」之后的第 index 位（0 起，不含「全部」）。
+     * 返回是否真的发生了变化，方便调用方跳过无意义的渲染。
+     */
+    async moveFolder(from: string, index: number): Promise<boolean> {
+        if (!from || from === '全部') return false;
+        const current = this.stateValue.folders;
+        if (!current.includes(from)) return false;
+        const rest = current.filter((folder) => folder !== '全部' && folder !== from);
+        const requested = Number.isFinite(index) ? Math.trunc(index) : rest.length;
+        rest.splice(Math.max(0, Math.min(requested, rest.length)), 0, from);
+        const next = ['全部', ...rest];
+        if (next.length === current.length && next.every((folder, position) => folder === current[position])) {
+            return false;
+        }
+        await this.commit((draft) => { draft.folders = next; }, ['folders']);
+        return true;
+    }
+
     async renameFolder(from: string, to: string): Promise<boolean> {
         const name = cleanText(to, 80);
         if (!name || from === '全部' || (name !== from && this.stateValue.folders.includes(name))) return false;

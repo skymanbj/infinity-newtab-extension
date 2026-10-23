@@ -892,3 +892,88 @@ test('clears icons that unrelated sites share by mistake', async ({ page }) => {
     expect(saved.find((bookmark) => bookmark.name === 'Bilibili 番剧').icon).toBe('https://www.bilibili.com/favicon.ico');
     expect(errors).toEqual([]);
 });
+
+test('reorders folder tabs from the tab menu', async ({ page }) => {
+    const seed = structuredClone(initialData);
+    seed.folders = ['全部', 'POM', '工作'];
+    seed.bookmarks.push({ id: 4, name: 'Figma', url: 'https://www.figma.com/', icon: '', folder: '工作', order: 0 });
+
+    const errors = await openExtension(page, seed);
+    await openLaunchpad(page);
+    const tabs = page.locator('.launchpad-tabs .launchpad-tab[data-folder]');
+    await expect(tabs).toHaveCount(3);
+    await expect(tabs.nth(1)).toHaveText('POM');
+    await expect(tabs.nth(2)).toHaveText('工作');
+
+    await tabs.nth(1).click({ button: 'right' });
+    await page.getByText('右移', { exact: true }).click();
+    await expect(tabs.nth(1)).toHaveText('工作');
+    await expect(tabs.nth(2)).toHaveText('POM');
+    expect((await page.evaluate(() => window.__readMockSync())).folders).toEqual(['全部', '工作', 'POM']);
+
+    // 最左边的文件夹不能再左移，「全部」不参与排序。
+    await tabs.nth(1).click({ button: 'right' });
+    await expect(page.locator('.context-menu button', { hasText: '左移' })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await tabs.nth(0).click({ button: 'right' });
+    await expect(page.locator('.context-menu')).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
+
+test('reorders folder tabs by dragging one onto another', async ({ page }) => {
+    const seed = structuredClone(initialData);
+    seed.folders = ['全部', 'POM', '工作', '阅读'];
+    for (const [index, folder] of ['工作', '阅读'].entries()) {
+        seed.bookmarks.push({ id: 10 + index, name: folder, url: `https://${index}.example.com/`, icon: '', folder, order: 0 });
+    }
+
+    const errors = await openExtension(page, seed);
+    await openLaunchpad(page);
+    const tabs = page.locator('.launchpad-tabs .launchpad-tab[data-folder]');
+    await expect(tabs).toHaveCount(4);
+
+    // 把「POM」拖到「阅读」的右半边 → 应该排到最后。
+    await page.evaluate(() => {
+        const items = [...document.querySelectorAll('.launchpad-tabs .launchpad-tab[data-folder]')];
+        const drag = { source: items[1], target: items[3], transfer: new DataTransfer() };
+        window.__drag = drag;
+        drag.source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: drag.transfer }));
+        const rect = drag.target.getBoundingClientRect();
+        drag.target.dispatchEvent(new DragEvent('dragover', {
+            bubbles: true, dataTransfer: drag.transfer, clientX: rect.right - 2, clientY: rect.top + rect.height / 2
+        }));
+    });
+    await expect(tabs.nth(3)).toHaveClass(/drop-after/);
+    await page.evaluate(() => {
+        const { source, target, transfer } = window.__drag;
+        const rect = target.getBoundingClientRect();
+        target.dispatchEvent(new DragEvent('drop', {
+            bubbles: true, dataTransfer: transfer, clientX: rect.right - 2, clientY: rect.top + rect.height / 2
+        }));
+        source.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: transfer }));
+        delete window.__drag;
+    });
+
+    await expect(tabs.nth(1)).toHaveText('工作');
+    await expect(tabs.nth(3)).toHaveText('POM');
+    expect((await page.evaluate(() => window.__readMockSync())).folders).toEqual(['全部', '工作', '阅读', 'POM']);
+
+    // 拖到左半边则插到该标签之前。
+    await page.evaluate(() => {
+        const items = [...document.querySelectorAll('.launchpad-tabs .launchpad-tab[data-folder]')];
+        const drag = { source: items[3], target: items[1], transfer: new DataTransfer() };
+        window.__drag = drag;
+        drag.source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: drag.transfer }));
+        const rect = drag.target.getBoundingClientRect();
+        const point = { bubbles: true, dataTransfer: drag.transfer, clientX: rect.left + 2, clientY: rect.top + rect.height / 2 };
+        drag.target.dispatchEvent(new DragEvent('dragover', point));
+        drag.target.dispatchEvent(new DragEvent('drop', point));
+        drag.source.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: drag.transfer }));
+        delete window.__drag;
+    });
+
+    await expect(tabs.nth(1)).toHaveText('POM');
+    await expect(tabs.nth(3)).toHaveText('阅读');
+    expect((await page.evaluate(() => window.__readMockSync())).folders).toEqual(['全部', 'POM', '工作', '阅读']);
+    expect(errors).toEqual([]);
+});

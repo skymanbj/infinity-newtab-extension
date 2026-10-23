@@ -65,6 +65,15 @@ export async function moveBookmark(id: Bookmark['id'], folder: string, targetId?
     try { await appStore.moveBookmark(id, folder, targetId); } catch (error) { notifyError(error); }
 }
 
+/** 「全部」以外的文件夹顺序，也就是启动台标签的排列顺序。 */
+export function folderTabOrder(): string[] {
+    return appStore.state.folders.filter((folder) => folder !== ROOT_FOLDER);
+}
+
+export async function moveFolderTab(folder: string, index: number): Promise<void> {
+    try { await appStore.moveFolder(folder, index); } catch (error) { notifyError(error); }
+}
+
 export async function deleteBookmark(bookmark: Bookmark): Promise<void> {
     const confirmed = await confirmAction({
         title: `删除“${bookmarkName(bookmark) || bookmark.url}”？`,

@@ -12,8 +12,10 @@ import {
     createFolder,
     deleteFolder,
     findBookmark,
+    folderTabOrder,
     interceptExtensionLink,
     moveBookmark,
+    moveFolderTab,
     openBookmarkDialog,
     renameFolder,
     siteMenu
@@ -31,6 +33,7 @@ export class BookmarkLaunchpad extends StoreElement {
     private folder = ROOT_FOLDER;
     private query = '';
     private draggingId: Bookmark['id'] | null = null;
+    private draggingFolder: string | null = null;
     private recent: { sites: RecentSite[]; state: 'idle' | 'loading' | 'ready' | 'error'; error: string } = { sites: [], state: 'idle', error: '' };
     private releaseLayer: (() => void) | null = null;
 
@@ -89,6 +92,7 @@ export class BookmarkLaunchpad extends StoreElement {
         bindSiteIcons(this);
         this.querySelectorAll<HTMLAnchorElement>('.bookmark-tile').forEach((card) => this.bindBookmark(card));
         this.querySelectorAll<HTMLElement>('[data-drop-folder]').forEach((target) => this.bindFolderDrop(target));
+        this.querySelectorAll<HTMLElement>('.launchpad-tab[data-folder]').forEach((tab) => this.bindTabDrag(tab));
     }
 
     /** The shell (and its search field) is built once per opening so typing, including IME input, is never interrupted. */
@@ -307,13 +311,69 @@ export class BookmarkLaunchpad extends StoreElement {
         });
     }
 
+    /** 文件夹标签可以互相拖动排序；书签拖到标签上仍然是「移动到这个文件夹」。 */
+    private bindTabDrag(tab: HTMLElement): void {
+        const folder = tab.dataset.folder ?? '';
+        if (!folder || folder === ROOT_FOLDER) return;
+        tab.draggable = true;
+        const side = (event: DragEvent): boolean => {
+            const rect = tab.getBoundingClientRect();
+            return event.clientX > rect.left + rect.width / 2;
+        };
+        tab.addEventListener('dragstart', (event) => {
+            this.draggingFolder = folder;
+            if (event.dataTransfer) {
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', '');
+            }
+            tab.classList.add('is-dragging');
+        });
+        tab.addEventListener('dragend', () => {
+            this.draggingFolder = null;
+            tab.classList.remove('is-dragging');
+            this.clearTabDropHints();
+        });
+        tab.addEventListener('dragover', (event) => {
+            if (this.draggingFolder === null || this.draggingFolder === folder) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const after = side(event);
+            tab.classList.toggle('drop-after', after);
+            tab.classList.toggle('drop-before', !after);
+        });
+        tab.addEventListener('dragleave', () => tab.classList.remove('drop-before', 'drop-after'));
+        tab.addEventListener('drop', (event) => {
+            if (this.draggingFolder === null) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const after = side(event);
+            const from = this.draggingFolder;
+            this.draggingFolder = null;
+            this.clearTabDropHints();
+            const order = folderTabOrder();
+            const slot = order.indexOf(folder) + (after ? 1 : 0);
+            // 插到原位置之后时，被拖走的那一项会让目标下标前移一位。
+            void moveFolderTab(from, order.indexOf(from) < slot ? slot - 1 : slot);
+        });
+    }
+
+    private clearTabDropHints(): void {
+        this.querySelectorAll('.drop-before, .drop-after')
+            .forEach((item) => item.classList.remove('drop-before', 'drop-after'));
+    }
+
     private openTileMenu(tile: HTMLElement, at: { x: number; y: number } | HTMLElement): void {
         const folder = tile.dataset.folder;
         if (folder !== undefined) {
             if (folder === ROOT_FOLDER) return;
+            const order = folderTabOrder();
+            const index = order.indexOf(folder);
             openMenu([
                 { label: '打开', icon: ICONS.open, action: () => this.show('bookmarks', folder) },
                 { label: '重命名…', icon: ICONS.edit, action: () => void renameFolder(folder, (name) => { if (this.folder === folder || this.folder === name) this.folder = name; }) },
+                { separator: true },
+                { label: '左移', icon: ICONS.move, disabled: index <= 0, action: () => void moveFolderTab(folder, index - 1) },
+                { label: '右移', icon: ICONS.move, disabled: index >= order.length - 1, action: () => void moveFolderTab(folder, index + 1) },
                 { separator: true },
                 { label: '删除文件夹', icon: ICONS.trash, danger: true, action: () => void deleteFolder(folder) }
             ], at);

@@ -530,6 +530,26 @@
           }, ["folders"]);
           return true;
         }
+        /**
+         * 把文件夹挪到「全部」之后的第 index 位（0 起，不含「全部」）。
+         * 返回是否真的发生了变化，方便调用方跳过无意义的渲染。
+         */
+        async moveFolder(from, index) {
+          if (!from || from === "\u5168\u90E8") return false;
+          const current = this.stateValue.folders;
+          if (!current.includes(from)) return false;
+          const rest = current.filter((folder) => folder !== "\u5168\u90E8" && folder !== from);
+          const requested = Number.isFinite(index) ? Math.trunc(index) : rest.length;
+          rest.splice(Math.max(0, Math.min(requested, rest.length)), 0, from);
+          const next = ["\u5168\u90E8", ...rest];
+          if (next.length === current.length && next.every((folder, position) => folder === current[position])) {
+            return false;
+          }
+          await this.commit((draft) => {
+            draft.folders = next;
+          }, ["folders"]);
+          return true;
+        }
         async renameFolder(from, to) {
           const name = cleanText(to, 80);
           if (!name || from === "\u5168\u90E8" || name !== from && this.stateValue.folders.includes(name)) return false;
@@ -1601,6 +1621,16 @@
       notifyError(error);
     }
   }
+  function folderTabOrder() {
+    return appStore.state.folders.filter((folder) => folder !== ROOT_FOLDER);
+  }
+  async function moveFolderTab(folder, index) {
+    try {
+      await appStore.moveFolder(folder, index);
+    } catch (error) {
+      notifyError(error);
+    }
+  }
   async function deleteBookmark(bookmark) {
     const confirmed = await confirmAction({
       title: `\u5220\u9664\u201C${bookmarkName(bookmark) || bookmark.url}\u201D\uFF1F`,
@@ -1746,6 +1776,7 @@
         folder = ROOT_FOLDER;
         query = "";
         draggingId = null;
+        draggingFolder = null;
         recent = { sites: [], state: "idle", error: "" };
         releaseLayer = null;
         connectedCallback() {
@@ -1798,6 +1829,7 @@
           bindSiteIcons(this);
           this.querySelectorAll(".bookmark-tile").forEach((card) => this.bindBookmark(card));
           this.querySelectorAll("[data-drop-folder]").forEach((target) => this.bindFolderDrop(target));
+          this.querySelectorAll(".launchpad-tab[data-folder]").forEach((tab) => this.bindTabDrag(tab));
         }
         /** The shell (and its search field) is built once per opening so typing, including IME input, is never interrupted. */
         renderShell() {
@@ -1996,15 +2028,67 @@
             if (id !== null) void moveBookmark(id, folder);
           });
         }
+        /** 文件夹标签可以互相拖动排序；书签拖到标签上仍然是「移动到这个文件夹」。 */
+        bindTabDrag(tab) {
+          const folder = tab.dataset.folder ?? "";
+          if (!folder || folder === ROOT_FOLDER) return;
+          tab.draggable = true;
+          const side = (event) => {
+            const rect = tab.getBoundingClientRect();
+            return event.clientX > rect.left + rect.width / 2;
+          };
+          tab.addEventListener("dragstart", (event) => {
+            this.draggingFolder = folder;
+            if (event.dataTransfer) {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData("text/plain", "");
+            }
+            tab.classList.add("is-dragging");
+          });
+          tab.addEventListener("dragend", () => {
+            this.draggingFolder = null;
+            tab.classList.remove("is-dragging");
+            this.clearTabDropHints();
+          });
+          tab.addEventListener("dragover", (event) => {
+            if (this.draggingFolder === null || this.draggingFolder === folder) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const after = side(event);
+            tab.classList.toggle("drop-after", after);
+            tab.classList.toggle("drop-before", !after);
+          });
+          tab.addEventListener("dragleave", () => tab.classList.remove("drop-before", "drop-after"));
+          tab.addEventListener("drop", (event) => {
+            if (this.draggingFolder === null) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const after = side(event);
+            const from = this.draggingFolder;
+            this.draggingFolder = null;
+            this.clearTabDropHints();
+            const order = folderTabOrder();
+            const slot = order.indexOf(folder) + (after ? 1 : 0);
+            void moveFolderTab(from, order.indexOf(from) < slot ? slot - 1 : slot);
+          });
+        }
+        clearTabDropHints() {
+          this.querySelectorAll(".drop-before, .drop-after").forEach((item) => item.classList.remove("drop-before", "drop-after"));
+        }
         openTileMenu(tile, at) {
           const folder = tile.dataset.folder;
           if (folder !== void 0) {
             if (folder === ROOT_FOLDER) return;
+            const order = folderTabOrder();
+            const index = order.indexOf(folder);
             openMenu([
               { label: "\u6253\u5F00", icon: ICONS.open, action: () => this.show("bookmarks", folder) },
               { label: "\u91CD\u547D\u540D\u2026", icon: ICONS.edit, action: () => void renameFolder(folder, (name) => {
                 if (this.folder === folder || this.folder === name) this.folder = name;
               }) },
+              { separator: true },
+              { label: "\u5DE6\u79FB", icon: ICONS.move, disabled: index <= 0, action: () => void moveFolderTab(folder, index - 1) },
+              { label: "\u53F3\u79FB", icon: ICONS.move, disabled: index >= order.length - 1, action: () => void moveFolderTab(folder, index + 1) },
               { separator: true },
               { label: "\u5220\u9664\u6587\u4EF6\u5939", icon: ICONS.trash, danger: true, action: () => void deleteFolder(folder) }
             ], at);
