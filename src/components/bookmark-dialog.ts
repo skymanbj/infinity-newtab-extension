@@ -52,13 +52,13 @@ export class BookmarkDialog extends HTMLElement {
                         <span>文件夹</span>
                         <span class="select-wrap"><select name="folder">${appStore.state.folders.map((item) => `<option value="${escapeHtml(item)}" ${item === selected ? 'selected' : ''}>${escapeHtml(item)}</option>`).join('')}</select></span>
                     </label>
-                    <details class="field-advanced" ${bookmark?.icon ? 'open' : ''}>
-                        <summary>自定义图标</summary>
-                        <label class="field">
-                            <span>图标网址（留空自动获取）</span>
+                    <label class="field">
+                        <span>图标网址（留空则自动按网站获取）</span>
+                        <span class="field-with-action">
                             <input name="icon" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/icon.png" value="${escapeHtml(bookmark?.icon ?? '')}">
-                        </label>
-                    </details>
+                            <button class="pill-button icon-clear" type="button" data-liquid-item>清除</button>
+                        </span>
+                    </label>
                     <p class="field-error" role="alert" hidden></p>
                     <footer class="modal-actions">
                         <button class="pill-button cancel-dialog" type="button" data-liquid-item>取消</button>
@@ -87,6 +87,11 @@ export class BookmarkDialog extends HTMLElement {
             updatePreview();
         });
         iconInput.addEventListener('change', updatePreview);
+        this.querySelector('.icon-clear')?.addEventListener('click', () => {
+            iconInput.value = '';
+            updatePreview();
+            iconInput.focus();
+        });
         this.querySelector('.dialog-close')?.addEventListener('click', () => this.close());
         this.querySelector('.cancel-dialog')?.addEventListener('click', () => this.close());
         backdrop.addEventListener('pointerdown', (event) => { if (event.target === backdrop) this.close(); });

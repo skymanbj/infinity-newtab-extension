@@ -859,7 +859,6 @@ test('edits a bookmark in place instead of duplicating it', async ({ page }) => 
     await expect(dialog).toBeVisible();
     await expect(dialog.locator('input[name="name"]')).toHaveValue('www.google.com');
     await dialog.locator('input[name="name"]').fill('Google 搜索');
-    await dialog.locator('details.field-advanced summary').click();
     await dialog.locator('input[name="icon"]').fill('https://example.com/google.png');
     await dialog.getByRole('button', { name: '保存' }).click();
     await expect(dialog).toHaveCount(0);
@@ -890,6 +889,12 @@ test('clears icons that unrelated sites share by mistake', async ({ page }) => {
     expect(saved.find((bookmark) => bookmark.name === 'GitHub').icon).toBe('');
     expect(saved.find((bookmark) => bookmark.name === 'Bilibili').icon).toBe('https://www.bilibili.com/favicon.ico');
     expect(saved.find((bookmark) => bookmark.name === 'Bilibili 番剧').icon).toBe('https://www.bilibili.com/favicon.ico');
+
+    // 画面上也必须立刻换掉，不能只在存储里清空。
+    await page.keyboard.press('Escape');
+    await openLaunchpad(page);
+    const rendered = await page.locator('.launchpad .bookmark-tile img').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('src') || ''));
+    expect(rendered.some((src) => src.includes('cee009549b352'))).toBe(false);
     expect(errors).toEqual([]);
 });
 

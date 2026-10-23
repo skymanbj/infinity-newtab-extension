@@ -1795,6 +1795,24 @@ label.setting-row {
     display: block;
 }
 
+/* 图标网址 + 清除：输入框占满，按钮固定宽度。 */
+.field-with-action {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.field-with-action input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.field-with-action .pill-button {
+    flex: none;
+    height: 40px;
+    padding: 0 14px;
+}
+
 .field-with-icon img {
     position: absolute;
     top: 50%;

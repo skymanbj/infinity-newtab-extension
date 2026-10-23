@@ -1425,13 +1425,13 @@
                         <span>\u6587\u4EF6\u5939</span>
                         <span class="select-wrap"><select name="folder">${appStore.state.folders.map((item) => `<option value="${escapeHtml(item)}" ${item === selected ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select></span>
                     </label>
-                    <details class="field-advanced" ${bookmark?.icon ? "open" : ""}>
-                        <summary>\u81EA\u5B9A\u4E49\u56FE\u6807</summary>
-                        <label class="field">
-                            <span>\u56FE\u6807\u7F51\u5740\uFF08\u7559\u7A7A\u81EA\u52A8\u83B7\u53D6\uFF09</span>
+                    <label class="field">
+                        <span>\u56FE\u6807\u7F51\u5740\uFF08\u7559\u7A7A\u5219\u81EA\u52A8\u6309\u7F51\u7AD9\u83B7\u53D6\uFF09</span>
+                        <span class="field-with-action">
                             <input name="icon" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/icon.png" value="${escapeHtml(bookmark?.icon ?? "")}">
-                        </label>
-                    </details>
+                            <button class="pill-button icon-clear" type="button" data-liquid-item>\u6E05\u9664</button>
+                        </span>
+                    </label>
                     <p class="field-error" role="alert" hidden></p>
                     <footer class="modal-actions">
                         <button class="pill-button cancel-dialog" type="button" data-liquid-item>\u53D6\u6D88</button>
@@ -1461,6 +1461,11 @@
             updatePreview();
           });
           iconInput.addEventListener("change", updatePreview);
+          this.querySelector(".icon-clear")?.addEventListener("click", () => {
+            iconInput.value = "";
+            updatePreview();
+            iconInput.focus();
+          });
           this.querySelector(".dialog-close")?.addEventListener("click", () => this.close());
           this.querySelector(".cancel-dialog")?.addEventListener("click", () => this.close());
           backdrop.addEventListener("pointerdown", (event) => {
