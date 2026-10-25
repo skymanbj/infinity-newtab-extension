@@ -11,3 +11,8 @@ infinity-newtab-backup-*.json
 
 # 本地工作记忆，不属于项目源码
 .workbuddy-ai/
+
+# 浏览器/调试截图
+shot-*.png
+shot-*.jpg
+*.screenshot.png
