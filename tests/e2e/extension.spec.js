@@ -608,7 +608,11 @@ test('persists layout, theme and local wallpaper controls', async ({ page }) => 
     await page.locator('.settings-nav-item[data-pane="wallpaper"]').click();
     const wallpaperRanges = page.locator('.settings-pane[data-pane="wallpaper"] liquid-range');
     await expect(wallpaperRanges).toHaveCount(2);
-    await expect(page.locator('.liquid-range-thumb[data-liquid-profile="convex"]')).toHaveCount(3);
+    // 每个滑块共用同一个凸面 profile，数量随设置项增减，这里只断言口径一致。
+    const thumbProfiles = await page.locator('.liquid-range-thumb').evaluateAll((nodes) => (
+        [...new Set(nodes.map((node) => node.dataset.liquidProfile))]
+    ));
+    expect(thumbProfiles).toEqual(['convex']);
     const rangeMapCount = await page.locator('liquid-range feImage[result="displacement_map"]').evaluateAll((images) => (
         new Set(images.map((image) => image.getAttribute('href'))).size
     ));
@@ -1347,6 +1351,65 @@ test('scrolls the folder tab strip with a plain mouse wheel', async ({ page }) =
         const view = node.parentElement.getBoundingClientRect();
         return tab.left >= view.left - 1 && tab.right <= view.right + 1;
     })).toBe(true);
+    expect(errors).toEqual([]);
+});
+
+test('defines the launchpad columns, rows and icon size', async ({ page }) => {
+    const seed = structuredClone(initialData);
+    // 40 条书签，够铺好几屏，行数限制才有意义。
+    for (let index = 0; index < 40; index += 1) {
+        seed.bookmarks.push({ id: 100 + index, name: `站点 ${index}`, url: `https://site-${index}.example.com/`, icon: '', folder: '全部', order: 10 + index });
+    }
+
+    const errors = await openExtension(page, seed);
+    await openLaunchpad(page);
+    const grid = page.locator('.launchpad-grid');
+    // 默认是自动：列数由窗口决定，行高交给内容。
+    await expect(grid).not.toHaveClass(/is-fixed/);
+    expect(await grid.evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBeGreaterThan(6);
+    await page.locator('.launchpad-done').click();
+
+    await openSettings(page, 'widgets');
+    await page.locator('input[name="launchpadColumns"]').fill('6');
+    await page.locator('input[name="launchpadRows"]').fill('4');
+    await page.locator('input[name="launchpadTile"]').fill('120');
+    await expect.poll(() => page.evaluate(() => window.__readMockSync().settings.layout)).toMatchObject({
+        launchpadColumns: 6,
+        launchpadRows: 4,
+        launchpadTile: 120
+    });
+    await page.keyboard.press('Escape');
+
+    await openLaunchpad(page);
+    await expect(grid).toHaveClass(/is-fixed/);
+    await expect(grid).toHaveClass(/has-row-count/);
+    const fixed = await grid.evaluate((node) => {
+        const style = getComputedStyle(node);
+        const tiles = [...node.querySelectorAll('.tile')];
+        return {
+            columns: style.gridTemplateColumns.split(' ').length,
+            rowHeight: parseFloat(style.gridAutoRows),
+            tile: getComputedStyle(node.querySelector('.tile')).width,
+            icon: parseFloat(getComputedStyle(node.querySelector('.tile .app-icon')).fontSize),
+            // 只看首屏那 4 行（6 列 × 4 行）的底边：负值代表都还在可视区内。
+            overflowBottom: Math.max(...tiles.slice(0, 24).map((tile) => tile.getBoundingClientRect().bottom)) - node.getBoundingClientRect().bottom
+        };
+    });
+    expect(fixed.columns).toBe(6);
+    expect(fixed.tile).toBe('120px');
+    // 行高被压到 4 行均分的高度时，图标跟着行高缩（留出内边距和名称），不会顶出可视区。
+    expect(fixed.rowHeight).toBeGreaterThan(100);
+    expect(fixed.icon).toBeLessThanOrEqual(fixed.rowHeight - 39);
+    expect(fixed.overflowBottom).toBeLessThanOrEqual(1);
+
+    // 一屏正好 4 行：第 5 行的顶部必须落在可视区之外。
+    const rows = await grid.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const tops = new Set();
+        node.querySelectorAll('.tile').forEach((tile) => tops.add(Math.round(tile.getBoundingClientRect().top)));
+        return [...tops].filter((top) => top < box.bottom - 4).length;
+    });
+    expect(rows).toBe(4);
     expect(errors).toEqual([]);
 });
 

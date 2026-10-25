@@ -20,7 +20,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
         dockMagnify: true,
         saveSearches: true,
         backupReminder: true,
-        recentExcluded: []
+        recentExcluded: [],
+        launchpadColumns: 0,
+        launchpadRows: 0,
+        launchpadTile: 104
     },
     wallpaper: {
         type: 'gradient',
@@ -161,7 +164,11 @@ export function sanitizeSettings(value: unknown): AppSettings {
             dockMagnify: booleanOr(layout.dockMagnify, true),
             saveSearches: booleanOr(layout.saveSearches, true),
             backupReminder: booleanOr(layout.backupReminder, true),
-            recentExcluded: hostList(layout.recentExcluded)
+            recentExcluded: hostList(layout.recentExcluded),
+            // 0 表示「自动」，所以下限是 0 而不是 4：老备份没有这三个键时也落在自动上。
+            launchpadColumns: Math.round(clampNumber(layout.launchpadColumns, 0, 14, 0)),
+            launchpadRows: Math.round(clampNumber(layout.launchpadRows, 0, 8, 0)),
+            launchpadTile: Math.round(clampNumber(layout.launchpadTile, 64, 140, 104))
         },
         wallpaper: {
             type: wallpaperTypes.includes(String(wallpaper.type))

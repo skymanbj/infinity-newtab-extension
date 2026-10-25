@@ -189,7 +189,11 @@
         dockMagnify: booleanOr(layout.dockMagnify, true),
         saveSearches: booleanOr(layout.saveSearches, true),
         backupReminder: booleanOr(layout.backupReminder, true),
-        recentExcluded: hostList(layout.recentExcluded)
+        recentExcluded: hostList(layout.recentExcluded),
+        // 0 表示「自动」，所以下限是 0 而不是 4：老备份没有这三个键时也落在自动上。
+        launchpadColumns: Math.round(clampNumber(layout.launchpadColumns, 0, 14, 0)),
+        launchpadRows: Math.round(clampNumber(layout.launchpadRows, 0, 8, 0)),
+        launchpadTile: Math.round(clampNumber(layout.launchpadTile, 64, 140, 104))
       },
       wallpaper: {
         type: wallpaperTypes.includes(String(wallpaper.type)) ? wallpaper.type : "gradient",
@@ -291,7 +295,10 @@
           dockMagnify: true,
           saveSearches: true,
           backupReminder: true,
-          recentExcluded: []
+          recentExcluded: [],
+          launchpadColumns: 0,
+          launchpadRows: 0,
+          launchpadTile: 104
         },
         wallpaper: {
           type: "gradient",
@@ -1955,6 +1962,60 @@
     }
   });
 
+  // src/components/launchpad-grid.ts
+  function shareObserver() {
+    if (typeof ResizeObserver === "undefined") return null;
+    resizeObserver ??= new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const grid = entry.target;
+        const rows = rowCounts.get(grid) ?? 0;
+        if (rows > 0) applyRowHeight(grid, rows);
+      }
+    });
+    return resizeObserver;
+  }
+  function applyRowHeight(grid, rows) {
+    const height = grid.clientHeight;
+    if (height <= 0) return;
+    const style = getComputedStyle(grid);
+    const paddingTop = parseFloat(style.paddingTop) || 0;
+    const gap = parseFloat(style.rowGap) || 0;
+    const available = height - paddingTop - gap * (rows - 1);
+    const rowHeight = Math.max(Math.floor(available / rows), MIN_ROW_HEIGHT);
+    grid.style.setProperty("--launchpad-row-height", `${rowHeight}px`);
+  }
+  function applyLaunchpadGrid(grid, metrics) {
+    grid.style.setProperty("--launchpad-tile", `${metrics.launchpadTile}px`);
+    const columns = metrics.launchpadColumns;
+    grid.classList.toggle("is-fixed", columns > 0);
+    if (columns > 0) grid.style.setProperty("--launchpad-columns", String(columns));
+    else grid.style.removeProperty("--launchpad-columns");
+    const rows = metrics.launchpadRows;
+    grid.classList.toggle("has-row-count", rows > 0);
+    if (rows <= 0) {
+      rowCounts.delete(grid);
+      resizeObserver?.unobserve(grid);
+      grid.style.removeProperty("--launchpad-row-height");
+      return;
+    }
+    rowCounts.set(grid, rows);
+    shareObserver()?.observe(grid);
+    applyRowHeight(grid, rows);
+  }
+  function releaseLaunchpadGrid(grid) {
+    rowCounts.delete(grid);
+    resizeObserver?.unobserve(grid);
+  }
+  var MIN_ROW_HEIGHT, rowCounts, resizeObserver;
+  var init_launchpad_grid = __esm({
+    "src/components/launchpad-grid.ts"() {
+      "use strict";
+      MIN_ROW_HEIGHT = 72;
+      rowCounts = /* @__PURE__ */ new WeakMap();
+      resizeObserver = null;
+    }
+  });
+
   // src/components/site-icon.ts
   function siteIcon({ url, name, bookmark }, className = "") {
     const host = hostOf(url);
@@ -2035,6 +2096,7 @@
       init_base();
       init_bookmark_actions();
       init_icons();
+      init_launchpad_grid();
       init_site_icon();
       init_ui_layer();
       BookmarkLaunchpad = class extends StoreElement {
@@ -2050,11 +2112,18 @@
         connectedCallback() {
           this.hidden = true;
           super.connectedCallback();
+          window.addEventListener("resize", this.onResize);
         }
         disconnectedCallback() {
+          window.removeEventListener("resize", this.onResize);
           super.disconnectedCallback();
           this.close();
         }
+        /** 「一屏几行」是按可见高度均分的，窗口一变就要重算。 */
+        onResize = () => {
+          const grid = this.querySelector(".launchpad-grid");
+          if (this.isOpen && grid) applyLaunchpadGrid(grid, appStore.state.settings.layout);
+        };
         get isOpen() {
           return !this.hidden;
         }
@@ -2075,6 +2144,8 @@
         }
         close() {
           if (!this.isOpen) return;
+          const grid = this.querySelector(".launchpad-grid");
+          if (grid) releaseLaunchpadGrid(grid);
           this.hidden = true;
           document.body.classList.remove("launchpad-open");
           this.innerHTML = "";
@@ -2100,6 +2171,7 @@
           grid.innerHTML = this.gridTemplate();
           grid.scrollTop = scroll;
           this.revealActiveTab();
+          applyLaunchpadGrid(grid, appStore.state.settings.layout);
           bindSiteIcons(this);
           this.querySelectorAll(".bookmark-tile").forEach((card) => this.bindBookmark(card));
           this.querySelectorAll("[data-drop-folder]").forEach((target) => this.bindFolderDrop(target));
@@ -4227,15 +4299,19 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
   function toggleRow(name, label, sub = "", dependsOn = "") {
     return `<label class="setting-row toggle-row" ${depends(dependsOn)}>${rowLabel(label, sub)}<liquid-toggle><input type="checkbox" role="switch" data-toggle="${name}"><span class="liquid-toggle-track" aria-hidden="true"><span class="liquid-toggle-thumb"></span></span></liquid-toggle></label>`;
   }
-  function rangeRow(name, label, value, min, max, unit, dependsOn = "", sub = "") {
+  function rangeRow(name, label, value, min, max, unit, dependsOn = "", sub = "", zeroLabel = "") {
+    const text = rangeText(value, unit, zeroLabel);
     return `
         <div class="setting-row" ${depends(dependsOn)}>
             ${rowLabel(label, sub)}
             <span class="range-control">
-                <span class="range-row"><liquid-range><span class="liquid-range-track" aria-hidden="true"><span class="liquid-range-fill"></span></span><span class="liquid-range-thumb" aria-hidden="true"></span><input type="range" name="${name}" min="${min}" max="${max}" value="${value}" data-unit="${unit}" aria-label="${label}"></liquid-range></span>
-                <output>${value}${unit}</output>
+                <span class="range-row"><liquid-range><span class="liquid-range-track" aria-hidden="true"><span class="liquid-range-fill"></span></span><span class="liquid-range-thumb" aria-hidden="true"></span><input type="range" name="${name}" min="${min}" max="${max}" value="${value}" data-unit="${unit}"${zeroLabel ? ` data-zero-label="${zeroLabel}"` : ""} aria-label="${label}"></liquid-range></span>
+                <output>${text}</output>
             </span>
         </div>`;
+  }
+  function rangeText(value, unit, zeroLabel) {
+    return Number(value) === 0 && zeroLabel ? zeroLabel : `${value}${unit}`;
   }
   function wallpaperKind({ type, value }) {
     if (type === "video") return "video";
@@ -4256,7 +4332,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     const total = Math.round(seconds);
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
   }
-  var PANES, SettingsPanel;
+  var RANGE_SECTIONS, PANES, SettingsPanel;
   var init_settings_panel = __esm({
     "src/components/settings-panel.ts"() {
       "use strict";
@@ -4269,8 +4345,17 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
       init_base();
       init_dashboard_header();
       init_icons();
+      init_launchpad_grid();
       init_spotlight_search();
       init_ui_layer();
+      RANGE_SECTIONS = {
+        dockSize: "layout",
+        launchpadColumns: "layout",
+        launchpadRows: "layout",
+        launchpadTile: "layout",
+        blur: "wallpaper",
+        overlay: "wallpaper"
+      };
       PANES = [
         ["appearance", "\u5916\u89C2", ICONS.look, "#0a84ff"],
         ["widgets", "\u7EC4\u4EF6", ICONS.widgets, "#ff9f0a"],
@@ -4383,6 +4468,11 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             ${group("\u641C\u7D22", `
                 ${segmentRow("searchEngine", "\u9ED8\u8BA4\u641C\u7D22\u5F15\u64CE", layout.searchEngine, Object.entries(ENGINES).map(([key, engine]) => [key, engine.label]))}
                 ${toggleRow("saveSearches", "\u4FDD\u5B58\u6700\u8FD1\u641C\u7D22")}
+            `)}
+            ${group("\u542F\u52A8\u53F0", `
+                ${rangeRow("launchpadColumns", "\u6BCF\u884C\u56FE\u6807\u6570", layout.launchpadColumns, 0, 14, "", "", "0 \u4E3A\u81EA\u52A8\uFF1A\u6309\u7A97\u53E3\u5BBD\u5EA6\u94FA\u6EE1", "\u81EA\u52A8")}
+                ${rangeRow("launchpadRows", "\u4E00\u5C4F\u884C\u6570", layout.launchpadRows, 0, 8, "", "", "0 \u4E3A\u81EA\u52A8\uFF1A\u4E66\u7B7E\u591A\u4E86\u5C31\u5F80\u4E0B\u6EDA", "\u81EA\u52A8")}
+                ${rangeRow("launchpadTile", "\u56FE\u6807\u5C3A\u5BF8", layout.launchpadTile, 64, 140, "px", "", "\u56FE\u6807\u4E0E\u540D\u79F0\u4E00\u8D77\u7F29\u653E")}
             `)}
         `);
         }
@@ -4499,12 +4589,26 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           this.querySelectorAll('input[type="range"]').forEach((input) => {
             input.addEventListener("input", () => {
               const output = input.closest(".setting-row")?.querySelector("output");
-              if (output) output.textContent = `${input.value}${input.dataset.unit ?? ""}`;
+              if (output) output.textContent = rangeText(input.value, input.dataset.unit ?? "", input.dataset.zeroLabel ?? "");
+              if (input.name === "launchpadColumns" || input.name === "launchpadRows" || input.name === "launchpadTile") {
+                const grid = document.querySelector("infinity-newtab-launchpad .launchpad-grid");
+                if (grid) {
+                  const layout = appStore.state.settings.layout;
+                  const next = {
+                    launchpadColumns: layout.launchpadColumns,
+                    launchpadRows: layout.launchpadRows,
+                    launchpadTile: layout.launchpadTile
+                  };
+                  next[input.name] = Number(input.value);
+                  applyLaunchpadGrid(grid, next);
+                }
+                return;
+              }
               const [selector, property, value] = input.name === "dockSize" ? ["home-dock", "--dock-size", `${input.value}px`] : input.name === "blur" ? ["wallpaper-surface", "--wallpaper-blur", `${input.value}px`] : ["wallpaper-surface", "--wallpaper-overlay", String(Number(input.value) / 100)];
               document.querySelector(selector)?.style.setProperty(property, value);
             });
             input.addEventListener("change", () => {
-              const section = input.name === "dockSize" ? "layout" : "wallpaper";
+              const section = RANGE_SECTIONS[input.name] ?? "wallpaper";
               void appStore.updateSettings(section, { [input.name]: Number(input.value) }).catch(notifyError);
             });
           });
@@ -4655,7 +4759,14 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           this.querySelectorAll("[data-depends]").forEach((row) => {
             row.classList.toggle("is-disabled", (row.dataset.depends ?? "").split(" ").some((name) => !toggles[name]));
           });
-          const ranges = { blur: wallpaper.blur, overlay: wallpaper.overlay, dockSize: layout.dockSize };
+          const ranges = {
+            blur: wallpaper.blur,
+            overlay: wallpaper.overlay,
+            dockSize: layout.dockSize,
+            launchpadColumns: layout.launchpadColumns,
+            launchpadRows: layout.launchpadRows,
+            launchpadTile: layout.launchpadTile
+          };
           this.querySelectorAll('input[type="range"]').forEach((input) => {
             const value = ranges[input.name];
             if (!Number.isFinite(value) || Number(input.value) === value) return;

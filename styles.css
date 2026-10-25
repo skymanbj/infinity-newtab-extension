@@ -1269,11 +1269,13 @@ body.theme-light .launchpad-backdrop {
 }
 
 .launchpad-grid {
+    --launchpad-tile: 104px;
+    --launchpad-icon: calc(var(--launchpad-tile) * 0.73);
     display: grid;
     width: min(1000px, calc(100% - 32px));
     min-height: 0;
     flex: 1;
-    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(var(--launchpad-tile), 1fr));
     align-content: start;
     gap: 30px 18px;
     overflow-y: auto;
@@ -1282,10 +1284,53 @@ body.theme-light .launchpad-backdrop {
     scrollbar-width: none;
 }
 
+/* 指定了每行个数：列宽跟着图标尺寸走，整体居中，窗口再窄也不会把磁贴压扁。 */
+.launchpad-grid.is-fixed {
+    width: min(
+        calc(var(--launchpad-columns) * var(--launchpad-tile) + (var(--launchpad-columns) - 1) * 18px),
+        calc(100% - 32px)
+    );
+    grid-template-columns: repeat(var(--launchpad-columns), minmax(0, var(--launchpad-tile)));
+    justify-content: center;
+}
+
+/* 窗口放不下这么多列时，磁贴跟着列宽一起缩，图标按磁贴宽度等比缩放。 */
+.launchpad-grid.is-fixed .tile {
+    width: 100%;
+    max-width: var(--launchpad-tile);
+    container-type: inline-size;
+}
+
+.launchpad-grid.is-fixed .tile .app-icon {
+    font-size: min(var(--launchpad-icon), 73cqw);
+}
+
+.launchpad-grid.is-fixed .tile-name {
+    max-width: 100%;
+}
+
+/* 指定了一屏行数：把可见高度均分给这些行，超出的部分照常往下滚。 */
+.launchpad-grid.has-row-count {
+    grid-auto-rows: var(--launchpad-row-height);
+}
+
+.launchpad-grid.has-row-count .tile {
+    align-self: center;
+}
+
+/* 行高被「一屏几行」压紧时图标跟着缩（留出内边距 + 名称的位置），磁贴不会顶出可视区。 */
+.launchpad-grid.is-fixed.has-row-count .tile .app-icon {
+    font-size: min(var(--launchpad-icon), 73cqw, max(28px, calc(var(--launchpad-row-height) - 40px)));
+}
+
+.launchpad-grid.has-row-count:not(.is-fixed) .tile .app-icon {
+    font-size: min(var(--launchpad-icon), max(28px, calc(var(--launchpad-row-height) - 40px)));
+}
+
 .tile {
     position: relative;
     display: flex;
-    width: 104px;
+    width: var(--launchpad-tile, 104px);
     flex-direction: column;
     align-items: center;
     justify-self: center;
@@ -1297,6 +1342,7 @@ body.theme-light .launchpad-backdrop {
 }
 
 .tile .app-icon {
+    font-size: var(--launchpad-icon, 76px);
     transition: transform 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -1306,7 +1352,7 @@ body.theme-light .launchpad-backdrop {
 
 .tile-name {
     overflow: hidden;
-    max-width: 96px;
+    max-width: calc(var(--launchpad-tile, 104px) - 8px);
     font-size: 13px;
     font-weight: 500;
     text-overflow: ellipsis;
@@ -2559,18 +2605,15 @@ liquid-glass-system {
         right: 16px;
     }
 
+    /* 图标尺寸由设置里的「启动台 → 图标尺寸」统一决定，这里只收紧间距。 */
     .launchpad-grid {
-        grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(var(--launchpad-tile), 1fr));
         gap: 22px 10px;
         padding-top: 32px;
     }
 
-    .tile {
-        width: 88px;
-    }
-
-    .tile .app-icon {
-        font-size: 64px;
+    .launchpad-grid.is-fixed {
+        grid-template-columns: repeat(var(--launchpad-columns), minmax(0, var(--launchpad-tile)));
     }
 
     .spotlight {

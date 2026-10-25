@@ -21,6 +21,7 @@ import {
     siteMenu
 } from './bookmark-actions';
 import { ICONS } from './icons';
+import { applyLaunchpadGrid, releaseLaunchpadGrid } from './launchpad-grid';
 import { bindSiteIcons, hostOf, siteIcon } from './site-icon';
 import { afterMotion, openMenu, pushLayer } from './ui-layer';
 
@@ -41,12 +42,20 @@ export class BookmarkLaunchpad extends StoreElement {
     connectedCallback(): void {
         this.hidden = true;
         super.connectedCallback();
+        window.addEventListener('resize', this.onResize);
     }
 
     disconnectedCallback(): void {
+        window.removeEventListener('resize', this.onResize);
         super.disconnectedCallback();
         this.close();
     }
+
+    /** 「一屏几行」是按可见高度均分的，窗口一变就要重算。 */
+    private readonly onResize = (): void => {
+        const grid = this.querySelector<HTMLElement>('.launchpad-grid');
+        if (this.isOpen && grid) applyLaunchpadGrid(grid, appStore.state.settings.layout);
+    };
 
     get isOpen(): boolean {
         return !this.hidden;
@@ -70,6 +79,8 @@ export class BookmarkLaunchpad extends StoreElement {
 
     close(): void {
         if (!this.isOpen) return;
+        const grid = this.querySelector<HTMLElement>('.launchpad-grid');
+        if (grid) releaseLaunchpadGrid(grid);
         this.hidden = true;
         document.body.classList.remove('launchpad-open');
         this.innerHTML = '';
@@ -98,6 +109,7 @@ export class BookmarkLaunchpad extends StoreElement {
         grid.scrollTop = scroll;
         // 每次重建标签都会回到最左，选中的标签可能在屏幕外，重新滑回来。
         this.revealActiveTab();
+        applyLaunchpadGrid(grid, appStore.state.settings.layout);
         bindSiteIcons(this);
         this.querySelectorAll<HTMLAnchorElement>('.bookmark-tile').forEach((card) => this.bindBookmark(card));
         this.querySelectorAll<HTMLElement>('[data-drop-folder]').forEach((target) => this.bindFolderDrop(target));

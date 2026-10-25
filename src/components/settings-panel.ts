@@ -20,11 +20,22 @@ import { resetWallpaper, useLocalWallpaper, useOnlineWallpaper, wallpaperLabel }
 import { StoreElement } from './base';
 import { formatDate } from './dashboard-header';
 import { ICONS } from './icons';
+import { applyLaunchpadGrid } from './launchpad-grid';
 import { ENGINES, SHORTCUT_LABEL } from './spotlight-search';
 import { afterMotion, confirmAction, notify, notifyError, pushLayer } from './ui-layer';
 
 type Pane = 'appearance' | 'widgets' | 'wallpaper' | 'data';
 type Option = [value: string, label: string];
+
+/** 滑块改动落在哪个设置分区；没列出来的都是壁纸。 */
+const RANGE_SECTIONS: Record<string, 'layout' | 'wallpaper'> = {
+    dockSize: 'layout',
+    launchpadColumns: 'layout',
+    launchpadRows: 'layout',
+    launchpadTile: 'layout',
+    blur: 'wallpaper',
+    overlay: 'wallpaper'
+};
 
 const PANES: Array<[Pane, string, string, string]> = [
     ['appearance', '外观', ICONS.look, '#0a84ff'],
@@ -148,6 +159,11 @@ export class SettingsPanel extends StoreElement {
                 ${segmentRow('searchEngine', '默认搜索引擎', layout.searchEngine, Object.entries(ENGINES).map(([key, engine]) => [key, engine.label] as Option))}
                 ${toggleRow('saveSearches', '保存最近搜索')}
             `)}
+            ${group('启动台', `
+                ${rangeRow('launchpadColumns', '每行图标数', layout.launchpadColumns, 0, 14, '', '', '0 为自动：按窗口宽度铺满', '自动')}
+                ${rangeRow('launchpadRows', '一屏行数', layout.launchpadRows, 0, 8, '', '', '0 为自动：书签多了就往下滚', '自动')}
+                ${rangeRow('launchpadTile', '图标尺寸', layout.launchpadTile, 64, 140, 'px', '', '图标与名称一起缩放')}
+            `)}
         `);
     }
 
@@ -268,8 +284,22 @@ export class SettingsPanel extends StoreElement {
         this.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((input) => {
             input.addEventListener('input', () => {
                 const output = input.closest('.setting-row')?.querySelector('output');
-                if (output) output.textContent = `${input.value}${input.dataset.unit ?? ''}`;
+                if (output) output.textContent = rangeText(input.value, input.dataset.unit ?? '', input.dataset.zeroLabel ?? '');
                 // Preview live; persisted on release to spare sync write quota.
+                if (input.name === 'launchpadColumns' || input.name === 'launchpadRows' || input.name === 'launchpadTile') {
+                    const grid = document.querySelector<HTMLElement>('infinity-newtab-launchpad .launchpad-grid');
+                    if (grid) {
+                        const layout = appStore.state.settings.layout;
+                        const next = {
+                            launchpadColumns: layout.launchpadColumns,
+                            launchpadRows: layout.launchpadRows,
+                            launchpadTile: layout.launchpadTile
+                        };
+                        next[input.name] = Number(input.value);
+                        applyLaunchpadGrid(grid, next);
+                    }
+                    return;
+                }
                 const [selector, property, value] = input.name === 'dockSize'
                     ? ['home-dock', '--dock-size', `${input.value}px`]
                     : input.name === 'blur'
@@ -278,7 +308,7 @@ export class SettingsPanel extends StoreElement {
                 document.querySelector<HTMLElement>(selector)?.style.setProperty(property, value);
             });
             input.addEventListener('change', () => {
-                const section = input.name === 'dockSize' ? 'layout' : 'wallpaper';
+                const section = RANGE_SECTIONS[input.name] ?? 'wallpaper';
                 void appStore.updateSettings(section, { [input.name]: Number(input.value) }).catch(notifyError);
             });
         });
@@ -435,7 +465,14 @@ export class SettingsPanel extends StoreElement {
             row.classList.toggle('is-disabled', (row.dataset.depends ?? '').split(' ').some((name) => !toggles[name]));
         });
 
-        const ranges: Record<string, number> = { blur: wallpaper.blur, overlay: wallpaper.overlay, dockSize: layout.dockSize };
+        const ranges: Record<string, number> = {
+            blur: wallpaper.blur,
+            overlay: wallpaper.overlay,
+            dockSize: layout.dockSize,
+            launchpadColumns: layout.launchpadColumns,
+            launchpadRows: layout.launchpadRows,
+            launchpadTile: layout.launchpadTile
+        };
         this.querySelectorAll<HTMLInputElement>('input[type="range"]').forEach((input) => {
             const value = ranges[input.name];
             if (!Number.isFinite(value) || Number(input.value) === value) return;
@@ -761,15 +798,21 @@ function toggleRow(name: string, label: string, sub = '', dependsOn = ''): strin
     return `<label class="setting-row toggle-row" ${depends(dependsOn)}>${rowLabel(label, sub)}<liquid-toggle><input type="checkbox" role="switch" data-toggle="${name}"><span class="liquid-toggle-track" aria-hidden="true"><span class="liquid-toggle-thumb"></span></span></liquid-toggle></label>`;
 }
 
-function rangeRow(name: string, label: string, value: number, min: number, max: number, unit: string, dependsOn = '', sub = ''): string {
+function rangeRow(name: string, label: string, value: number, min: number, max: number, unit: string, dependsOn = '', sub = '', zeroLabel = ''): string {
+    const text = rangeText(value, unit, zeroLabel);
     return `
         <div class="setting-row" ${depends(dependsOn)}>
             ${rowLabel(label, sub)}
             <span class="range-control">
-                <span class="range-row"><liquid-range><span class="liquid-range-track" aria-hidden="true"><span class="liquid-range-fill"></span></span><span class="liquid-range-thumb" aria-hidden="true"></span><input type="range" name="${name}" min="${min}" max="${max}" value="${value}" data-unit="${unit}" aria-label="${label}"></liquid-range></span>
-                <output>${value}${unit}</output>
+                <span class="range-row"><liquid-range><span class="liquid-range-track" aria-hidden="true"><span class="liquid-range-fill"></span></span><span class="liquid-range-thumb" aria-hidden="true"></span><input type="range" name="${name}" min="${min}" max="${max}" value="${value}" data-unit="${unit}"${zeroLabel ? ` data-zero-label="${zeroLabel}"` : ''} aria-label="${label}"></liquid-range></span>
+                <output>${text}</output>
             </span>
         </div>`;
+}
+
+/** 「0 表示自动」的滑块要显示文字而不是 0，刻度单位另算。 */
+function rangeText(value: string | number, unit: string, zeroLabel: string): string {
+    return Number(value) === 0 && zeroLabel ? zeroLabel : `${value}${unit}`;
 }
 
 function wallpaperKind({ type, value }: AppSettings['wallpaper']): string {

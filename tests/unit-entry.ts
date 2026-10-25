@@ -96,6 +96,17 @@ assert.deepEqual(
 );
 assert.deepEqual(sanitizeSettings({ layout: { recentExcluded: 'youtube.com' } }).layout.recentExcluded, [], '旧备份里没有这个字段时应回落到空名单');
 
+// 启动台布局：0 是「自动」，所以下限必须是 0；越界值一律夹到边界。
+const launchpadDefaults = sanitizeSettings({}).layout;
+assert.equal(launchpadDefaults.launchpadColumns, 0, '默认每行个数应为自动');
+assert.equal(launchpadDefaults.launchpadRows, 0, '默认一屏行数应为自动');
+assert.equal(launchpadDefaults.launchpadTile, 104, '默认图标尺寸应保持原来的 104px');
+const launchpadClamped = sanitizeSettings({ layout: { launchpadColumns: 99, launchpadRows: -3, launchpadTile: 999 } }).layout;
+assert.equal(launchpadClamped.launchpadColumns, 14, '每行个数上限为 14');
+assert.equal(launchpadClamped.launchpadRows, 0, '负数的行数应夹回自动');
+assert.equal(launchpadClamped.launchpadTile, 140, '图标尺寸上限为 140');
+assert.equal(sanitizeSettings({ layout: { launchpadTile: 'abc' } }).layout.launchpadTile, 104, '非法值回落到默认尺寸');
+
 const unsafe = sanitizeImportedData({
     bookmarks: [{ id: 1, name: 'bad', url: 'javascript:alert(1)', icon: 'javascript:alert(2)' }],
     folders: ['全部', '<script>'],

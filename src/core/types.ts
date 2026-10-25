@@ -23,6 +23,12 @@ export interface LayoutSettings {
     backupReminder: boolean;
     /** Hosts removed from “常访问” through the context menu; browser history is left untouched. */
     recentExcluded: string[];
+    /** Launchpad icons per row; 0 keeps the automatic fill that follows the window width. */
+    launchpadColumns: number;
+    /** Launchpad rows that should fit on one screen; 0 lets the grid scroll naturally. */
+    launchpadRows: number;
+    /** Width of one launchpad tile (icon + label); the icon scales with it. */
+    launchpadTile: number;
 }
 
 export interface WallpaperSettings {
