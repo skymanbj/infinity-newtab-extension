@@ -1,12 +1,31 @@
 import assert from 'node:assert/strict';
-import { sanitizeImportedData, sanitizeSettings } from '../src/core/backup';
+import { sanitizeBookmarks, sanitizeImportedData, sanitizeSettings } from '../src/core/backup';
 import { BOOKMARK_CHUNKS_KEY, bookmarkChunkKey } from '../src/core/bookmark-storage';
 import { rankSites } from '../src/core/history';
 import { sharedIconUrls, siteKeyOf, stripSharedIcons } from '../src/core/icon-audit';
+import { formatBytes, iconByteSize, isInlineIcon } from '../src/core/image-icon';
 import { AppStore } from '../src/core/store';
 import { convexSquircle, lipSquircle, precalculateDisplacements } from '../src/components/liquid-optics';
 import { hostOf } from '../src/components/site-icon';
 import { bookmarkIcon, bookmarkIconCanUpgrade, bookmarkIconFallback, bookmarkIconIsRaster, bookmarkIconSrcSet, faviconUrl, normalizeUrl } from '../src/core/utils';
+import { base64ToBytes, bytesToBase64 } from '../src/core/base64';
+import {
+    DEFAULT_WEBDAV_FILE,
+    deleteBackup,
+    ensureWebDavAccess,
+    loadWebDavAccount,
+    saveWebDavAccount,
+    sanitizeWebDavAccount,
+    uploadBackup,
+    usesBackgroundChannel,
+    webDavHref
+} from '../src/core/webdav';
+import {
+    WEBDAV_REQUEST_TYPE,
+    isWebDavRequestMessage,
+    isWebDavResponseMessage,
+    type WebDavRequestMessage
+} from '../src/core/webdav-bridge';
 
 const syncData: Record<string, unknown> = {};
 const localData: Record<string, unknown> = {};
@@ -70,6 +89,12 @@ assert.equal(sanitizeSettings({ appearance: { theme: 'dark' } }).appearance.them
 assert.equal(sanitizeSettings({ wallpaper: { type: 'local', value: 'online-123' } }).wallpaper.value, 'online-123', '缓存的在线壁纸需要保留版本号以触发刷新');
 assert.equal(sanitizeSettings({}).layout.dockSource, 'recent', 'Dock 默认显示常访问');
 assert.equal(sanitizeSettings({ layout: { dockSource: 'bookmarks' } }).layout.dockSource, 'bookmarks', '主动选择的固定书签必须保留');
+assert.deepEqual(
+    sanitizeSettings({ layout: { recentExcluded: ['A.com', 'a.com', ' b.com ', 'not a host\nx', '', 7, null] } }).layout.recentExcluded,
+    ['a.com', 'b.com'],
+    '常访问屏蔽名单要转小写、去重并丢弃空值和带空白的项'
+);
+assert.deepEqual(sanitizeSettings({ layout: { recentExcluded: 'youtube.com' } }).layout.recentExcluded, [], '旧备份里没有这个字段时应回落到空名单');
 
 const unsafe = sanitizeImportedData({
     bookmarks: [{ id: 1, name: 'bad', url: 'javascript:alert(1)', icon: 'javascript:alert(2)' }],
@@ -113,6 +138,17 @@ assert.equal(bookmarkIconIsRaster(managedBookmark), true, 'Chrome favicon 应按
 assert.equal(bookmarkIconIsRaster({ ...managedBookmark, icon: 'data:image/svg+xml;base64,PHN2Zy' }), false, 'SVG 图标不应套用位图放大策略');
 assert.ok(bookmarkIconFallback(customBookmark).includes('size=128'), '自定义图标失败时应回退到本地 favicon');
 
+// 本地图片图标：内嵌 data: 是用户明确选的，哪怕像素少也不能被 favicon 顶掉。
+const localBookmark = { ...managedBookmark, icon: 'data:image/webp;base64,AAAA' };
+assert.equal(bookmarkIconCanUpgrade(localBookmark), false, '本地图片图标不应被自动升级成 favicon');
+assert.equal(bookmarkIcon(localBookmark), localBookmark.icon, '本地图片图标应原样显示');
+assert.equal(isInlineIcon(localBookmark.icon), true, 'data:image 应被识别为内嵌图标');
+assert.equal(isInlineIcon('https://assets.example/icon.png'), false, '远程地址不是内嵌图标');
+assert.equal(iconByteSize('data:image/png;base64,AAAA'), 3, 'base64 长度应换算成真实字节数');
+assert.equal(iconByteSize('data:image/png;base64,AAA='), 2, '带填充的 base64 不应多算一个字节');
+assert.equal(formatBytes(900), '900 B');
+assert.equal(formatBytes(4096), '4.0 KB');
+
 const ranked = rankSites([
     { url: 'https://www.youtube.com/', title: 'YouTube', visitCount: 1, lastVisitTime: 150 },
     { url: 'https://www.youtube.com/watch?v=1', visitCount: 8, lastVisitTime: 200 },
@@ -141,6 +177,17 @@ assert.equal(localSites[1].count, 4);
 assert.equal(rankSites([{ url: 'https://example.com:8443/app', visitCount: 2 }])[0].url, 'https://example.com:8443/');
 assert.equal(hostOf('http://localhost:18923/#/x'), 'localhost:18923', 'hostOf 也要带上端口');
 assert.equal(hostOf('https://www.youtube.com/watch'), 'youtube.com');
+
+// 「从常访问移除」按 host 屏蔽，不动浏览器历史：被屏蔽的站点整站消失，其他站点不受影响。
+const excludedSites = rankSites([
+    { url: 'https://www.youtube.com/', title: 'YouTube', visitCount: 1, lastVisitTime: 150 },
+    { url: 'https://www.youtube.com/watch?v=1', visitCount: 8, lastVisitTime: 200 },
+    { url: 'https://www.v2ex.com/t/1', visitCount: 5, lastVisitTime: 100 },
+    { url: 'http://localhost:3000/', visitCount: 2, lastVisitTime: 50 }
+], new Set(['youtube.com', 'localhost:3000']));
+assert.equal(excludedSites.length, 1, '被屏蔽的 host 必须整站消失，包括它下面的所有路径');
+assert.equal(excludedSites[0].host, 'v2ex.com');
+assert.equal(rankSites([{ url: 'http://localhost:3000/' }], new Set(['localhost'])).length, 1, '屏蔽 localhost 不能连带影响 localhost:3000');
 
 // 图标串号：官方 user-share-icon 会把同一个 ID 解析成同一张图，跨站共用即坏数据。
 const jdIcon = 'https://infinityicon.infinitynewtab.com/user-share-icon/cee009549b352def723ba09d6da4b742.png';
@@ -255,7 +302,253 @@ async function testTransactions(): Promise<void> {
     assert.equal(store.state.bookmarks.length, countBeforeFailure, '写入失败时内存状态必须回滚');
 }
 
+/** 加载时就修掉串号图标，不依赖用户手动点「修复图标」。 */
+async function testSharedIconAutoRepair(): Promise<void> {
+    const jd = 'https://infinityicon.infinitynewtab.com/user-share-icon/cee009549b352def723ba09d6da4b742.png';
+    // 上一个用例留下了分片键，先清掉，避免 decodeBookmarks 读到旧数据。
+    Object.keys(syncData)
+        .filter((key) => key === 'bookmarks' || key === 'bookmarkChunks' || key.startsWith('bookmarks.'))
+        .forEach((key) => delete syncData[key]);
+    Object.assign(syncData, {
+        bookmarks: [
+            { id: 1, name: 'A', url: 'https://a.example/', icon: jd, folder: '全部', order: 0 },
+            { id: 2, name: 'B', url: 'https://b.other.com/', icon: jd, folder: '全部', order: 1 },
+            { id: 3, name: 'C', url: 'https://c.other.com/', icon: 'https://c.other.com/icon.png', folder: '全部', order: 2 }
+        ],
+        folders: ['全部'],
+        settings: sanitizeSettings({}),
+        recentSearches: []
+    });
+    const store = new AppStore();
+    await store.init();
+    assert.equal(store.state.bookmarks.filter((bookmark) => bookmark.icon === '').length, 2, '跨站共用的图标必须在加载时就清掉');
+    assert.equal(store.state.bookmarks[2].icon, 'https://c.other.com/icon.png', '正常图标不能被误伤');
+
+    for (let attempt = 0; attempt < 50 && !Array.isArray(syncData['bookmarks.0']); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const written = (syncData['bookmarks.0'] ?? []) as Array<{ name: string; icon: string }>;
+    assert.equal(written.length, 3, '修复结果要写回同步存储');
+    assert.equal(written.filter((bookmark) => bookmark.icon === '').length, 2, '存储里也必须是修好的');
+}
+
+/**
+ * 官方备份把同一个 id 发给完全不同的站点。按 id 的 find / findIndex 只会命中
+ * 第一条，于是「编辑任何一条书签都是同一条」，deleteBookmark 还会误删同 id 的全部。
+ */
+async function testDuplicateIdRepair(): Promise<void> {
+    const same = '6dcbbe4e9dc6ef2fd68da7d8befd117c';
+    const repaired = sanitizeBookmarks([
+        { id: same, name: 'A', url: 'https://a.example/', folder: '全部', order: 0 },
+        { id: same, name: 'B', url: 'https://b.example/', folder: '全部', order: 1 },
+        { id: same, name: 'C', url: 'https://c.example/', folder: '全部', order: 2 },
+        { id: 7, name: 'N', url: 'https://n.example/', folder: '全部', order: 3 }
+    ]);
+    assert.equal(repaired.length, 4, '撞号不能丢书签');
+    assert.equal(new Set(repaired.map((bookmark) => String(bookmark.id))).size, 4, '修复后 id 必须互不相同');
+    assert.equal(repaired[0].id, same, '首次出现的 id 要保留');
+    assert.ok(
+        repaired.slice(1).every((bookmark) => String(bookmark.id) !== String(same)),
+        '后续撞号记录必须换成新 id'
+    );
+    assert.equal(
+        sanitizeBookmarks([
+            { id: same, name: 'B', url: 'https://b.example/' },
+            { id: same, name: 'C', url: 'https://c.example/' }
+        ])[1].id,
+        repaired[2].id,
+        '派生 id 要稳定，刷新后不能漂移'
+    );
+
+    // 撞号的 id 同样要在加载时写回存储，并保证 deleteBookmark 不再误删同 id 记录。
+    Object.keys(syncData)
+        .filter((key) => key === 'bookmarks' || key === 'bookmarkChunks' || key.startsWith('bookmarks.'))
+        .forEach((key) => delete syncData[key]);
+    Object.assign(syncData, {
+        bookmarks: [
+            { id: same, name: 'A', url: 'https://a.example/', folder: '全部', order: 0 },
+            { id: same, name: 'B', url: 'https://b.example/', folder: '全部', order: 1 },
+            { id: same, name: 'C', url: 'https://c.example/', folder: '全部', order: 2 },
+            { id: 7, name: 'N', url: 'https://n.example/', folder: '全部', order: 3 }
+        ],
+        folders: ['全部'],
+        settings: sanitizeSettings({}),
+        recentSearches: []
+    });
+    const store = new AppStore();
+    await store.init();
+    assert.equal(new Set(store.state.bookmarks.map((bookmark) => String(bookmark.id))).size, 4, '内存里也不能有重复 id');
+
+    for (let attempt = 0; attempt < 50 && !Array.isArray(syncData['bookmarks.0']); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const written = (syncData['bookmarks.0'] ?? []) as Array<{ id: string | number; url: string }>;
+    assert.equal(written.length, 4, '撞号修复要写回同步存储');
+    assert.equal(new Set(written.map((bookmark) => String(bookmark.id))).size, 4, '存储里也不能有重复 id');
+
+    await store.deleteBookmark(written[1].id);
+    assert.equal(store.state.bookmarks.length, 3, '删除一条只能删掉一条');
+    assert.ok(!store.state.bookmarks.some((bookmark) => bookmark.url === 'https://b.example/'), '删掉的就是 b');
+    assert.ok(store.state.bookmarks.some((bookmark) => bookmark.url === 'https://a.example/'), '同 id 的其他书签不能被一起删掉');
+}
+
+/** 「从常访问移除」只写屏蔽名单并持久化，恢复时一次性清掉全部。 */
+async function testRecentExclusion(): Promise<void> {
+    Object.keys(syncData)
+        .filter((key) => key === 'bookmarks' || key === 'bookmarkChunks' || key.startsWith('bookmarks.'))
+        .forEach((key) => delete syncData[key]);
+    Object.assign(syncData, {
+        bookmarks: [],
+        folders: ['全部'],
+        settings: sanitizeSettings({}),
+        recentSearches: []
+    });
+    const store = new AppStore();
+    await store.init();
+    assert.deepEqual(store.state.settings.layout.recentExcluded, [], '新装状态应没有屏蔽项');
+
+    assert.equal(await store.removeRecentSite('  YouTube.com '), true, '首次移除要写入名单');
+    assert.equal(await store.removeRecentSite('youtube.com'), false, '重复移除不能写入两次');
+    assert.equal(await store.removeRecentSite(''), false, '空 host 要拒绝');
+    assert.deepEqual(store.state.settings.layout.recentExcluded, ['youtube.com'], '写入的 host 要转小写并去掉首尾空白');
+
+    for (let attempt = 0; attempt < 50 && !(syncData.settings as { layout?: { recentExcluded?: unknown } })?.layout?.recentExcluded; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.deepEqual((syncData.settings as { layout: { recentExcluded: string[] } }).layout.recentExcluded, ['youtube.com'], '屏蔽名单要写回同步存储');
+
+    assert.equal(await store.restoreRecentSites(), 1, '恢复要返回找回的站点数');
+    assert.deepEqual(store.state.settings.layout.recentExcluded, [], '恢复后要清空名单');
+    assert.equal(await store.restoreRecentSites(), 0, '名单为空时恢复不能产生写入');
+}
+
+/** 账密只存本机；地址和文件名都要收敛成服务器能寻址的形态。 */
+async function testWebDavAccount(): Promise<void> {
+    assert.deepEqual(sanitizeWebDavAccount({ url: 'https://dav.example.com/a/b/' }), {
+        url: 'https://dav.example.com/a/b',
+        username: '',
+        password: '',
+        file: DEFAULT_WEBDAV_FILE
+    }, '地址要裁掉尾部斜杠');
+    assert.deepEqual(sanitizeWebDavAccount({ url: 'https://user:secret@example.com/' }), {
+        url: 'https://example.com',
+        username: '',
+        password: '',
+        file: DEFAULT_WEBDAV_FILE
+    }, '地址里内嵌的账密必须剥掉，改走 Basic 头');
+    assert.equal(sanitizeWebDavAccount({ url: 'ftp://example.com/' }).url, '', '非 http(s) 地址要拒绝');
+    assert.deepEqual(sanitizeWebDavAccount({ url: 'not a url', username: '  admin  ', file: '../escape' }), {
+        url: '',
+        username: 'admin',
+        password: '',
+        file: DEFAULT_WEBDAV_FILE
+    }, '非法地址清空、账户去首尾空白、越界文件名回落默认值');
+    assert.equal(webDavHref(sanitizeWebDavAccount({ url: 'https://dav.example.com/a', file: 'b.json' })), 'https://dav.example.com/a/b.json');
+
+    await saveWebDavAccount(sanitizeWebDavAccount({ url: 'https://dav.example.com/', username: 'me', password: 'secret', file: 'backup.json' }));
+    assert.deepEqual(await loadWebDavAccount(), {
+        url: 'https://dav.example.com',
+        username: 'me',
+        password: 'secret',
+        file: 'backup.json'
+    }, '保存后要能完整读回');
+    assert.equal(syncData.webdav, undefined, '账密不能写进同步存储');
+    assert.deepEqual(localData.webdav, { url: 'https://dav.example.com', username: 'me', password: 'secret', file: 'backup.json' });
+
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+        seen.push({ url, init });
+        return new Response('created', { status: 201, statusText: 'Created' });
+    }) as typeof fetch;
+    try {
+        const account = { url: 'https://dav.example.com', username: 'me', password: 'secret', file: 'backup.json' };
+        await uploadBackup(account, { version: '2.0', data: { bookmarks: [] } });
+        assert.equal(seen.length, 1, '上传只发一次请求');
+        assert.equal(seen[0].url, 'https://dav.example.com/backup.json');
+        assert.equal(seen[0].init.method, 'PUT');
+        const headers = seen[0].init.headers as Record<string, string>;
+        assert.equal(headers.Authorization, `Basic ${Buffer.from('me:secret', 'utf8').toString('base64')}`);
+        assert.equal(headers['Content-Type'], 'application/json');
+        assert.ok(seen[0].init.body instanceof Blob, '备份要作为 Blob 上传');
+        assert.equal(await (seen[0].init.body as Blob).text(), '{"version":"2.0","data":{"bookmarks":[]}}');
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+}
+
+/** 扩展页面受同源策略限制，真正的请求要交给持有 host 权限的后台 worker。 */
+async function testWebDavBackgroundBridge(): Promise<void> {
+    const bytes = new Uint8Array([0, 1, 127, 128, 255]);
+    assert.deepEqual(Array.from(base64ToBytes(bytesToBase64(bytes))), Array.from(bytes), 'base64 要能无损往返');
+
+    assert.equal(usesBackgroundChannel('https://dav.example.com'), false, '没有权限检查接口时只能页面直连');
+    assert.equal(
+        await ensureWebDavAccess({ url: 'https://dav.example.com', username: 'me', password: 'secret', file: 'b.json' }),
+        false,
+        '没有 permissions 接口时授权要静默失败'
+    );
+
+    const account = { url: 'https://dav.example.com/dav', username: 'me', password: 'secret', file: 'b.json' };
+    const messages: unknown[] = [];
+    const requested: string[][] = [];
+    const chromeAny = chrome as Record<string, unknown>;
+    const previousPermissions = chromeAny.permissions;
+    chromeAny.permissions = undefined;
+    (chrome.runtime as Record<string, unknown>).hasHostPermission = ({ origins }: { origins: string[] }) => origins[0] === 'https://dav.example.com/*';
+    (chrome.runtime as Record<string, unknown>).sendMessage = async (message: unknown) => {
+        messages.push(message);
+        return { ok: true, status: 204, body: null };
+    };
+    try {
+        assert.equal(usesBackgroundChannel(account.url), true, '拿到 host 权限后要改走后台通道');
+        assert.equal(await ensureWebDavAccess(account), true, '已有权限时不再弹窗请求');
+
+        await uploadBackup(account, { version: '2.0', data: { bookmarks: [] } });
+        await deleteBackup(account);
+        assert.equal(messages.length, 2, '上传和删除各发一条后台消息');
+        const upload = messages[0] as WebDavRequestMessage;
+        const remove = messages[1] as WebDavRequestMessage;
+        assert.equal(upload.type, WEBDAV_REQUEST_TYPE);
+        assert.equal(upload.method, 'PUT');
+        assert.equal(remove.method, 'DELETE');
+        assert.equal(upload.url, 'https://dav.example.com/dav/b.json');
+        assert.ok(upload.timeout > 0 && remove.timeout > 0, '请求要带上超时');
+        assert.ok(upload.timeout > remove.timeout, '上传要给比删除更长的超时');
+        assert.equal(upload.headers['Content-Type'], 'application/json');
+        assert.equal(upload.headers.Authorization, `Basic ${Buffer.from('me:secret', 'utf8').toString('base64')}`);
+        assert.equal(remove.headers.Authorization, upload.headers.Authorization);
+        assert.deepEqual(JSON.parse(new TextDecoder().decode(base64ToBytes(upload.body ?? ''))), {
+            version: '2.0',
+            data: { bookmarks: [] }
+        }, '请求体要走 base64 无损往返');
+        assert.equal(remove.body, null, '删除请求没有正文');
+
+        assert.ok(isWebDavRequestMessage(upload));
+        assert.ok(!isWebDavRequestMessage({ type: 'other' }), '类型不匹配的消息要被拒收');
+        assert.ok(!isWebDavRequestMessage({ type: WEBDAV_REQUEST_TYPE, method: 'PUT', url: 'x', timeout: 1 }), '缺字段的消息要被拒收');
+        assert.ok(isWebDavResponseMessage({ ok: true, status: 201, body: null }));
+        assert.ok(isWebDavResponseMessage({ error: 'boom' }));
+        assert.ok(!isWebDavResponseMessage({ status: 201 }), '缺 ok 的回执要被拒收');
+
+        // 权限被撤销后要能通过 permissions API 重新申请。
+        (chrome.runtime as Record<string, unknown>).hasHostPermission = () => false;
+        chromeAny.permissions = { request: async ({ origins }: { origins: string[] }) => { requested.push(origins); return true; } };
+        assert.equal(await ensureWebDavAccess(account), true, '重新授权要成功');
+        assert.deepEqual(requested, [['https://dav.example.com/*']], '只申请目标服务器这一个来源，且要带 match pattern 的路径');
+    } finally {
+        delete (chrome.runtime as Record<string, unknown>).hasHostPermission;
+        delete (chrome.runtime as Record<string, unknown>).sendMessage;
+        chromeAny.permissions = previousPermissions;
+    }
+}
+
 testTransactions()
+    .then(testSharedIconAutoRepair)
+    .then(testDuplicateIdRepair)
+    .then(testRecentExclusion)
+    .then(testWebDavAccount)
+    .then(testWebDavBackgroundBridge)
     .then(() => console.log('TypeScript core tests passed.'))
     .catch((error) => {
         console.error(error);

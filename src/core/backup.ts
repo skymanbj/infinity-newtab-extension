@@ -19,7 +19,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
         dockSize: 56,
         dockMagnify: true,
         saveSearches: true,
-        backupReminder: true
+        backupReminder: true,
+        recentExcluded: []
     },
     wallpaper: {
         type: 'gradient',
@@ -78,6 +79,7 @@ export function sanitizeImportedData(value: unknown): Record<string, unknown> {
 
 export function sanitizeBookmarks(values: unknown[]): Bookmark[] {
     const merged = new Map<string, Bookmark>();
+    const seenIds = new Set<string>();
     values.forEach((raw, index) => {
         if (!isRecord(raw)) return;
         const url = normalizeUrl(raw.url);
@@ -85,9 +87,17 @@ export function sanitizeBookmarks(values: unknown[]): Bookmark[] {
         const folder = cleanText(raw.folder, 80) || '全部';
         const key = `${folder}|${canonicalUrl(url)}`;
         if (merged.has(key)) return;
-        const id = typeof raw.id === 'number' || typeof raw.id === 'string'
+        const rawId = typeof raw.id === 'number' || typeof raw.id === 'string'
             ? raw.id
             : Date.now() + index;
+        /**
+         * 官方备份和转换器会把同一个 id 发给完全不同的站点。按 id 的 find /
+         * findIndex 只会命中第一条，于是「编辑任何一条都是同一条」，而
+         * deleteBookmark 会误删全部同 id 记录。撞号的 id 换成由 folder+url
+         * 派生的稳定值：刷新后仍是同一个，不会因为每次加载都重新生成而漂移。
+         */
+        const id = seenIds.has(String(rawId)) ? dedupId(key) : rawId;
+        seenIds.add(String(id));
         const icon = sanitizeBookmarkIcon(raw.icon);
         const order = Number(raw.order);
         merged.set(key, {
@@ -111,6 +121,19 @@ export function sanitizeBookmarks(values: unknown[]): Bookmark[] {
         list.forEach((bookmark, index) => { bookmark.order = index; });
     });
     return Array.from(merged.values());
+}
+
+/** 原始数据里是否存在重复主键：true 说明 sanitizeBookmarks 改写过 id，需要写回存储。 */
+export function hasDuplicateBookmarkIds(values: unknown[]): boolean {
+    const seen = new Set<string>();
+    for (const row of values) {
+        if (!isRecord(row)) continue;
+        const id = typeof row.id === 'number' || typeof row.id === 'string' ? String(row.id) : '';
+        if (!id) continue;
+        if (seen.has(id)) return true;
+        seen.add(id);
+    }
+    return false;
 }
 
 export function sanitizeSettings(value: unknown): AppSettings {
@@ -137,7 +160,8 @@ export function sanitizeSettings(value: unknown): AppSettings {
             dockSize: Math.round(clampNumber(layout.dockSize, 40, 72, 56)),
             dockMagnify: booleanOr(layout.dockMagnify, true),
             saveSearches: booleanOr(layout.saveSearches, true),
-            backupReminder: booleanOr(layout.backupReminder, true)
+            backupReminder: booleanOr(layout.backupReminder, true),
+            recentExcluded: hostList(layout.recentExcluded)
         },
         wallpaper: {
             type: wallpaperTypes.includes(String(wallpaper.type))
@@ -183,6 +207,16 @@ function canonicalUrl(value: string): string {
     return `${url.origin}${url.pathname}`.toLowerCase();
 }
 
+/** FNV-1a over the folder+url key, so a reimported collision resolves to the same id. */
+function dedupId(key: string): string {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < key.length; index += 1) {
+        hash ^= key.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return `dedup-${(hash >>> 0).toString(36)}`;
+}
+
 /**
  * Before 2.5 `light` was the default everyone had, so it moves to `auto` (which
  * still picks dark text on bright wallpapers). 2.5 settings are recognised by
@@ -205,6 +239,21 @@ export function sanitizeBookmarkIcon(value: unknown): string {
 function sanitizeWallpaperValue(value: unknown): string {
     if (typeof value === 'string' && (value === '' || /^(local|online)(-\d+)?$/.test(value))) return value;
     return sanitizeRemoteUrl(value, true);
+}
+
+/** “常访问”屏蔽名单：只保留单个 host 形式的短字符串，去重并按上限截断。 */
+const MAX_RECENT_EXCLUDED = 500;
+const MAX_RECENT_HOST_LENGTH = 200;
+function hostList(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    const result: string[] = [];
+    for (const entry of value) {
+        const host = typeof entry === 'string' ? entry.trim().toLowerCase() : '';
+        if (!host || host.length > MAX_RECENT_HOST_LENGTH || /\s/.test(host)) continue;
+        if (!result.includes(host)) result.push(host);
+        if (result.length === MAX_RECENT_EXCLUDED) break;
+    }
+    return result;
 }
 
 function booleanOr(value: unknown, fallback: boolean): boolean {

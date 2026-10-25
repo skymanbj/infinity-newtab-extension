@@ -75,7 +75,7 @@
     return !bookmark.icon || isManagedFavicon(bookmark.icon) ? faviconSrcSet(bookmark.url) : "";
   }
   function bookmarkIconCanUpgrade(bookmark) {
-    return Boolean(bookmark.icon && !isManagedFavicon(bookmark.icon));
+    return Boolean(bookmark.icon && !isManagedFavicon(bookmark.icon) && !bookmark.icon.startsWith("data:"));
   }
   function bookmarkIconIsRaster(bookmark) {
     const icon2 = bookmarkIcon(bookmark);
@@ -120,6 +120,7 @@
   }
   function sanitizeBookmarks(values) {
     const merged = /* @__PURE__ */ new Map();
+    const seenIds = /* @__PURE__ */ new Set();
     values.forEach((raw, index) => {
       if (!isRecord(raw)) return;
       const url = normalizeUrl(raw.url);
@@ -127,7 +128,9 @@
       const folder = cleanText(raw.folder, 80) || "\u5168\u90E8";
       const key = `${folder}|${canonicalUrl(url)}`;
       if (merged.has(key)) return;
-      const id = typeof raw.id === "number" || typeof raw.id === "string" ? raw.id : Date.now() + index;
+      const rawId = typeof raw.id === "number" || typeof raw.id === "string" ? raw.id : Date.now() + index;
+      const id = seenIds.has(String(rawId)) ? dedupId(key) : rawId;
+      seenIds.add(String(id));
       const icon2 = sanitizeBookmarkIcon(raw.icon);
       const order = Number(raw.order);
       merged.set(key, {
@@ -153,6 +156,17 @@
     });
     return Array.from(merged.values());
   }
+  function hasDuplicateBookmarkIds(values) {
+    const seen = /* @__PURE__ */ new Set();
+    for (const row of values) {
+      if (!isRecord(row)) continue;
+      const id = typeof row.id === "number" || typeof row.id === "string" ? String(row.id) : "";
+      if (!id) continue;
+      if (seen.has(id)) return true;
+      seen.add(id);
+    }
+    return false;
+  }
   function sanitizeSettings(value) {
     const source = isRecord(value) ? value : {};
     const layout = isRecord(source.layout) ? source.layout : {};
@@ -174,7 +188,8 @@
         dockSize: Math.round(clampNumber(layout.dockSize, 40, 72, 56)),
         dockMagnify: booleanOr(layout.dockMagnify, true),
         saveSearches: booleanOr(layout.saveSearches, true),
-        backupReminder: booleanOr(layout.backupReminder, true)
+        backupReminder: booleanOr(layout.backupReminder, true),
+        recentExcluded: hostList(layout.recentExcluded)
       },
       wallpaper: {
         type: wallpaperTypes.includes(String(wallpaper.type)) ? wallpaper.type : "gradient",
@@ -215,6 +230,14 @@
     const url = new URL(value);
     return `${url.origin}${url.pathname}`.toLowerCase();
   }
+  function dedupId(key) {
+    let hash2 = 2166136261;
+    for (let index = 0; index < key.length; index += 1) {
+      hash2 ^= key.charCodeAt(index);
+      hash2 = Math.imul(hash2, 16777619);
+    }
+    return `dedup-${(hash2 >>> 0).toString(36)}`;
+  }
   function sanitizeTheme(theme, layout) {
     if (theme === "dark") return "dark";
     if (theme === "light") return typeof layout.openInNewTab === "boolean" ? "light" : "auto";
@@ -228,6 +251,17 @@
     if (typeof value === "string" && (value === "" || /^(local|online)(-\d+)?$/.test(value))) return value;
     return sanitizeRemoteUrl(value, true);
   }
+  function hostList(value) {
+    if (!Array.isArray(value)) return [];
+    const result = [];
+    for (const entry of value) {
+      const host = typeof entry === "string" ? entry.trim().toLowerCase() : "";
+      if (!host || host.length > MAX_RECENT_HOST_LENGTH || /\s/.test(host)) continue;
+      if (!result.includes(host)) result.push(host);
+      if (result.length === MAX_RECENT_EXCLUDED) break;
+    }
+    return result;
+  }
   function booleanOr(value, fallback) {
     return typeof value === "boolean" ? value : fallback;
   }
@@ -238,7 +272,7 @@
   function isRecord(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
   }
-  var DEFAULT_SETTINGS, MAX_INLINE_ICON_LENGTH;
+  var DEFAULT_SETTINGS, MAX_INLINE_ICON_LENGTH, MAX_RECENT_EXCLUDED, MAX_RECENT_HOST_LENGTH;
   var init_backup = __esm({
     "src/core/backup.ts"() {
       "use strict";
@@ -256,7 +290,8 @@
           dockSize: 56,
           dockMagnify: true,
           saveSearches: true,
-          backupReminder: true
+          backupReminder: true,
+          recentExcluded: []
         },
         wallpaper: {
           type: "gradient",
@@ -279,6 +314,8 @@
         }
       };
       MAX_INLINE_ICON_LENGTH = 4096;
+      MAX_RECENT_EXCLUDED = 500;
+      MAX_RECENT_HOST_LENGTH = 200;
     }
   });
 
@@ -359,6 +396,16 @@
     return new Set(
       [...usage.entries()].filter(([, sites]) => sites.size > 1).map(([icon2]) => icon2)
     );
+  }
+  function stripSharedIcons(bookmarks, shared = sharedIconUrls(bookmarks)) {
+    if (!shared.size) return { bookmarks, cleared: 0 };
+    let cleared = 0;
+    const next = bookmarks.map((bookmark) => {
+      if (!shared.has(bookmark.icon)) return bookmark;
+      cleared += 1;
+      return { ...bookmark, icon: "" };
+    });
+    return { bookmarks: next, cleared };
   }
   var TWO_LEVEL_SUFFIX;
   var init_icon_audit = __esm({
@@ -502,7 +549,10 @@
           const stored = await storageGet(null);
           this.bookmarkChunks = storedChunkCount(stored);
           this.hasLegacyBookmarks = LEGACY_BOOKMARKS_KEY in stored;
-          const bookmarks = sanitizeBookmarks(decodeBookmarks(stored));
+          const decoded = decodeBookmarks(stored);
+          const sanitized = sanitizeBookmarks(decoded);
+          const shared = sharedIconUrls(sanitized);
+          const bookmarks = stripSharedIcons(sanitized, shared).bookmarks;
           const folders = normalizeFolders(stored.folders, bookmarks);
           this.stateValue = {
             bookmarks,
@@ -513,6 +563,15 @@
           };
           this.initialized = true;
           this.emit(ALL_CHANGES);
+          const repairedIds = hasDuplicateBookmarkIds(decoded);
+          if (shared.size || repairedIds) {
+            void this.persistRepairs(shared, repairedIds).catch(() => void 0);
+          }
+        }
+        /** 修好的数据写回同步存储，串行执行以免两次 commit 互相覆盖。 */
+        async persistRepairs(shared, repairedIds) {
+          if (shared.size) await this.applySharedIconRepair(shared);
+          if (repairedIds) await this.commit(() => void 0, ["bookmarks"]);
         }
         async updateSettings(section, patch) {
           await this.commit((draft) => {
@@ -521,6 +580,26 @@
               [section]: { ...draft.settings[section], ...patch }
             });
           }, ["settings"], [`settings.${section}`]);
+        }
+        /** 把站点从「常访问」里移除：只写屏蔽名单，不碰浏览器历史，可以随时恢复。 */
+        async removeRecentSite(host) {
+          const value = String(host ?? "").trim().toLowerCase();
+          if (!value) return false;
+          const current = this.stateValue.settings.layout.recentExcluded;
+          if (current.includes(value)) return false;
+          await this.commit((draft) => {
+            draft.settings.layout.recentExcluded = [...current, value];
+          }, ["settings"], ["settings.layout"]);
+          return true;
+        }
+        /** 清掉整个屏蔽名单，返回恢复了几个站点。 */
+        async restoreRecentSites() {
+          const count = this.stateValue.settings.layout.recentExcluded.length;
+          if (!count) return 0;
+          await this.commit((draft) => {
+            draft.settings.layout.recentExcluded = [];
+          }, ["settings"], ["settings.layout"]);
+          return count;
         }
         async addFolder(value) {
           const name = cleanText(value, 80);
@@ -593,6 +672,9 @@
         /** 清掉被多个不同站点共用的远程图标（来源数据串号），返回清理条数。 */
         async clearSharedIcons() {
           const shared = sharedIconUrls(this.stateValue.bookmarks);
+          return this.applySharedIconRepair(shared);
+        }
+        async applySharedIconRepair(shared) {
           if (!shared.size) return 0;
           let cleared = 0;
           await this.commit((draft) => {
@@ -646,7 +728,7 @@
         }
         async replaceImportedData(data) {
           const next = initialState();
-          next.bookmarks = sanitizeBookmarks(Array.isArray(data.bookmarks) ? data.bookmarks : []);
+          next.bookmarks = stripSharedIcons(sanitizeBookmarks(Array.isArray(data.bookmarks) ? data.bookmarks : [])).bookmarks;
           next.folders = normalizeFolders(data.folders, next.bookmarks);
           next.settings = sanitizeSettings(data.settings);
           next.recentSearches = normalizeRecentSearches(data.recentSearches);
@@ -783,9 +865,9 @@
           const database = await this.open();
           try {
             return await new Promise((resolve, reject) => {
-              const request = database.transaction(STORE, "readonly").objectStore(STORE).get(kind);
-              request.onsuccess = () => resolve(request.result instanceof Blob ? request.result : null);
-              request.onerror = () => reject(request.error ?? new Error("\u65E0\u6CD5\u8BFB\u53D6\u672C\u5730\u58C1\u7EB8"));
+              const request2 = database.transaction(STORE, "readonly").objectStore(STORE).get(kind);
+              request2.onsuccess = () => resolve(request2.result instanceof Blob ? request2.result : null);
+              request2.onerror = () => reject(request2.error ?? new Error("\u65E0\u6CD5\u8BFB\u53D6\u672C\u5730\u58C1\u7EB8"));
             });
           } finally {
             database.close();
@@ -842,12 +924,12 @@
         }
         open() {
           return new Promise((resolve, reject) => {
-            const request = indexedDB.open(DATABASE, 1);
-            request.onupgradeneeded = () => {
-              if (!request.result.objectStoreNames.contains(STORE)) request.result.createObjectStore(STORE);
+            const request2 = indexedDB.open(DATABASE, 1);
+            request2.onupgradeneeded = () => {
+              if (!request2.result.objectStoreNames.contains(STORE)) request2.result.createObjectStore(STORE);
             };
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error ?? new Error("\u65E0\u6CD5\u6253\u5F00\u58C1\u7EB8\u6570\u636E\u5E93"));
+            request2.onsuccess = () => resolve(request2.result);
+            request2.onerror = () => reject(request2.error ?? new Error("\u65E0\u6CD5\u6253\u5F00\u58C1\u7EB8\u6570\u636E\u5E93"));
           });
         }
       };
@@ -1335,6 +1417,101 @@
     }
   });
 
+  // src/core/image-icon.ts
+  async function localImageToIcon(file) {
+    if (!file.type.startsWith("image/")) throw new Error("\u8BF7\u9009\u62E9\u56FE\u7247\u6587\u4EF6");
+    if (file.size > MAX_SOURCE_BYTES) throw new Error("\u56FE\u7247\u592A\u5927\u4E86\uFF0C\u8BF7\u9009\u62E9 20 MB \u4EE5\u5185\u7684\u56FE\u7247");
+    const source = await loadSource(file);
+    try {
+      for (const size of SIZES) {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("\u5F53\u524D\u6D4F\u89C8\u5668\u65E0\u6CD5\u5904\u7406\u56FE\u7247");
+        context.clearRect(0, 0, size, size);
+        source.paint(context, size);
+        for (const quality of QUALITIES) {
+          const icon2 = encode(canvas, quality);
+          if (icon2.length <= ICON_BUDGET) {
+            return { icon: icon2, size, bytes: iconByteSize(icon2) };
+          }
+        }
+      }
+      throw new Error("\u8FD9\u5F20\u56FE\u7247\u7EC6\u8282\u592A\u591A\uFF0C\u538B\u4E0D\u5230\u540C\u6B65\u5927\u5C0F\uFF0C\u6362\u4E00\u5F20\u66F4\u7B80\u5355\u7684\u56FE\u8BD5\u8BD5");
+    } finally {
+      source.dispose();
+    }
+  }
+  function iconByteSize(dataUrl) {
+    const comma = dataUrl.indexOf(",");
+    const payload = comma < 0 ? dataUrl.length : dataUrl.length - comma - 1;
+    const padding = dataUrl.endsWith("==") ? 2 : dataUrl.endsWith("=") ? 1 : 0;
+    return Math.max(0, Math.round(payload * 3 / 4) - padding);
+  }
+  function isInlineIcon(value) {
+    return typeof value === "string" && value.startsWith("data:image/");
+  }
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+    if (bytes < 1024) return `${Math.round(bytes)} B`;
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  async function loadSource(file) {
+    if (typeof createImageBitmap === "function") {
+      try {
+        const bitmap = await createImageBitmap(file);
+        return {
+          paint: (context, size) => drawContain(context, bitmap, bitmap.width, bitmap.height, size),
+          dispose: () => bitmap.close()
+        };
+      } catch {
+      }
+    }
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    try {
+      image.src = url;
+      await image.decode();
+    } catch {
+      URL.revokeObjectURL(url);
+      throw new Error("\u65E0\u6CD5\u8BFB\u53D6\u8FD9\u5F20\u56FE\u7247\uFF0C\u8BF7\u6362\u4E00\u5F20\u8BD5\u8BD5");
+    }
+    const width = image.naturalWidth || 256;
+    const height = image.naturalHeight || 256;
+    return {
+      paint: (context, size) => drawContain(context, image, width, height, size),
+      dispose: () => URL.revokeObjectURL(url)
+    };
+  }
+  function drawContain(context, image, width, height, size) {
+    const scale = Math.min(size / width, size / height);
+    const drawWidth = Math.max(1, Math.round(width * scale));
+    const drawHeight = Math.max(1, Math.round(height * scale));
+    context.drawImage(
+      image,
+      Math.round((size - drawWidth) / 2),
+      Math.round((size - drawHeight) / 2),
+      drawWidth,
+      drawHeight
+    );
+  }
+  function encode(canvas, quality) {
+    const webp = canvas.toDataURL("image/webp", quality);
+    return webp.startsWith("data:image/webp") ? webp : canvas.toDataURL("image/png");
+  }
+  var ICON_BUDGET, MAX_SOURCE_BYTES, SIZES, QUALITIES;
+  var init_image_icon = __esm({
+    "src/core/image-icon.ts"() {
+      "use strict";
+      init_backup();
+      ICON_BUDGET = MAX_INLINE_ICON_LENGTH;
+      MAX_SOURCE_BYTES = 20 * 1024 * 1024;
+      SIZES = [128, 112, 96, 80, 64, 48];
+      QUALITIES = [0.92, 0.8, 0.68, 0.55, 0.42];
+    }
+  });
+
   // src/components/icons.ts
   var icon, solid, ICONS;
   var init_icons = __esm({
@@ -1377,12 +1554,17 @@
   function previewSource(href) {
     return encodeURI(href).replace(/%25([0-9a-f]{2})/gi, "%$1");
   }
+  function localStatus(icon2, size) {
+    const bytes = formatBytes(iconByteSize(icon2));
+    return size > 0 ? `\u5DF2\u4F7F\u7528\u672C\u5730\u56FE\u7247 \xB7 ${size}\xD7${size} \xB7 ${bytes}` : `\u5DF2\u4F7F\u7528\u672C\u5730\u56FE\u7247 \xB7 ${bytes}`;
+  }
   var BookmarkDialog;
   var init_bookmark_dialog = __esm({
     "src/components/bookmark-dialog.ts"() {
       "use strict";
       init_store();
       init_utils();
+      init_image_icon();
       init_icons();
       init_ui_layer();
       BookmarkDialog = class extends HTMLElement {
@@ -1403,6 +1585,11 @@
           this.editing = bookmark;
           const selected = bookmark?.folder ?? folder;
           const title = bookmark ? "\u7F16\u8F91\u4E66\u7B7E" : "\u6DFB\u52A0\u4E66\u7B7E";
+          const storedIcon = bookmark?.icon ?? "";
+          let localIcon = isInlineIcon(storedIcon) ? storedIcon : "";
+          let localSize = 0;
+          const remoteIcon = localIcon ? "" : storedIcon;
+          const initialStatus = localIcon ? localStatus(localIcon, 0) : remoteIcon ? "\u4F7F\u7528\u56FE\u6807\u7F51\u5740" : "\u672A\u8BBE\u7F6E\uFF0C\u81EA\u52A8\u6309\u7F51\u7AD9\u83B7\u53D6";
           this.innerHTML = `
             <div class="modal-backdrop dialog-backdrop is-open">
                 <form class="modal bookmark-dialog glass glass-thick" role="dialog" aria-modal="true" aria-label="${title}" novalidate>
@@ -1425,13 +1612,17 @@
                         <span>\u6587\u4EF6\u5939</span>
                         <span class="select-wrap"><select name="folder">${appStore.state.folders.map((item) => `<option value="${escapeHtml(item)}" ${item === selected ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}</select></span>
                     </label>
-                    <label class="field">
-                        <span>\u56FE\u6807\u7F51\u5740\uFF08\u7559\u7A7A\u5219\u81EA\u52A8\u6309\u7F51\u7AD9\u83B7\u53D6\uFF09</span>
+                    <div class="field">
+                        <span>\u56FE\u6807\uFF08\u7559\u7A7A\u5219\u81EA\u52A8\u6309\u7F51\u7AD9\u83B7\u53D6\uFF09</span>
                         <span class="field-with-action">
-                            <input name="icon" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/icon.png" value="${escapeHtml(bookmark?.icon ?? "")}">
+                            <input name="icon" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/icon.png" value="${escapeHtml(remoteIcon)}">
                             <button class="pill-button icon-clear" type="button" data-liquid-item>\u6E05\u9664</button>
                         </span>
-                    </label>
+                        <span class="field-icon-tools">
+                            <label class="pill-button icon-upload" data-liquid-item>\u672C\u5730\u56FE\u7247\u2026<input type="file" accept="image/*" hidden></label>
+                            <span class="icon-status" role="status">${escapeHtml(initialStatus)}</span>
+                        </span>
+                    </div>
                     <p class="field-error" role="alert" hidden></p>
                     <footer class="modal-actions">
                         <button class="pill-button cancel-dialog" type="button" data-liquid-item>\u53D6\u6D88</button>
@@ -1446,10 +1637,33 @@
           const iconInput = form.querySelector('input[name="icon"]');
           const preview = form.querySelector(".url-preview");
           const error = form.querySelector(".field-error");
+          const tools = form.querySelector(".field-icon-tools");
+          const status = form.querySelector(".icon-status");
+          const upload = form.querySelector(".icon-upload");
+          const fileInput = form.querySelector('.icon-upload input[type="file"]');
+          const syncStatus = () => {
+            status.textContent = localIcon ? localStatus(localIcon, localSize) : sanitizeRemoteUrl(iconInput.value.trim(), true) ? "\u4F7F\u7528\u56FE\u6807\u7F51\u5740" : "\u672A\u8BBE\u7F6E\uFF0C\u81EA\u52A8\u6309\u7F51\u7AD9\u83B7\u53D6";
+            status.classList.toggle("is-local", Boolean(localIcon));
+          };
           const updatePreview = () => {
-            const custom = sanitizeRemoteUrl(iconInput.value.trim(), true);
+            const custom = localIcon || sanitizeRemoteUrl(iconInput.value.trim(), true);
             const url = normalizeUrl(urlInput.value);
             preview.src = custom ? previewSource(custom) : url ? faviconUrl(url, 64) : DEFAULT_ICON;
+            syncStatus();
+          };
+          const applyFile = async (file) => {
+            upload.classList.add("is-busy");
+            try {
+              const result = await localImageToIcon(file);
+              localIcon = result.icon;
+              localSize = result.size;
+              iconInput.value = "";
+              updatePreview();
+            } catch (applyError) {
+              notifyError(applyError, "\u65E0\u6CD5\u4F7F\u7528\u8FD9\u5F20\u56FE\u7247");
+            } finally {
+              upload.classList.remove("is-busy");
+            }
           };
           preview.addEventListener("error", () => {
             preview.src = DEFAULT_ICON;
@@ -1460,8 +1674,33 @@
             urlInput.removeAttribute("aria-invalid");
             updatePreview();
           });
-          iconInput.addEventListener("change", updatePreview);
+          iconInput.addEventListener("input", () => {
+            if (iconInput.value.trim() && localIcon) {
+              localIcon = "";
+              localSize = 0;
+            }
+            updatePreview();
+          });
+          fileInput.addEventListener("change", () => {
+            const file = fileInput.files?.[0];
+            fileInput.value = "";
+            if (file) void applyFile(file);
+          });
+          tools.addEventListener("dragover", (event) => {
+            if (!event.dataTransfer?.types.includes("Files")) return;
+            event.preventDefault();
+            tools.classList.add("is-drop");
+          });
+          tools.addEventListener("dragleave", () => tools.classList.remove("is-drop"));
+          tools.addEventListener("drop", (event) => {
+            event.preventDefault();
+            tools.classList.remove("is-drop");
+            const file = event.dataTransfer?.files?.[0];
+            if (file) void applyFile(file);
+          });
           this.querySelector(".icon-clear")?.addEventListener("click", () => {
+            localIcon = "";
+            localSize = 0;
             iconInput.value = "";
             updatePreview();
             iconInput.focus();
@@ -1478,7 +1717,8 @@
               url: String(data.get("url") ?? ""),
               name: String(data.get("name") ?? ""),
               folder: String(data.get("folder") ?? "\u5168\u90E8"),
-              icon: String(data.get("icon") ?? "").trim()
+              // 选了本地图片时以压缩后的内嵌图为准，输入框里的地址只是「网址图标」的来源。
+              icon: localIcon || String(data.get("icon") ?? "").trim()
             };
             if (!normalizeUrl(input.url)) {
               error.textContent = "\u8BF7\u8F93\u5165\u6709\u6548\u7684\u7F51\u5740\uFF0C\u4F8B\u5982 github.com";
@@ -1510,7 +1750,7 @@
   });
 
   // src/core/history.ts
-  function rankSites(items) {
+  function rankSites(items, excluded = /* @__PURE__ */ new Set()) {
     const hosts = /* @__PURE__ */ new Map();
     items.forEach((item) => {
       try {
@@ -1520,6 +1760,7 @@
         const bare = hostname.replace(/^www\./, "");
         if (!bare || bare === "newtab" || /(^|\.)google\.[a-z.]+$/.test(bare)) return;
         const host = url.port ? `${bare}:${url.port}` : bare;
+        if (excluded.has(host)) return;
         const visits = Math.max(1, Number(item.visitCount) || 1);
         const stats = hosts.get(host) ?? {
           host,
@@ -1539,7 +1780,7 @@
       } catch {
       }
     });
-    return [...hosts.values()].sort((left, right) => right.count - left.count || right.lastVisit - left.lastVisit).slice(0, 20).map(({ origins, rootTitle, ...site }) => {
+    return [...hosts.values()].sort((left, right) => right.count - left.count || right.lastVisit - left.lastVisit).slice(0, MAX_RECENT_SITES).map(({ origins, rootTitle, ...site }) => {
       const origin = [...origins.entries()].sort((left, right) => right[1] - left[1])[0][0];
       return { ...site, url: `${origin}/`, title: siteName(site.host, rootTitle) };
     });
@@ -1550,7 +1791,10 @@
     return host;
   }
   function loadRecentSites(refresh = false) {
-    if (!recentSites || refresh) {
+    const excluded = appStore.state.settings.layout.recentExcluded;
+    const key = excluded.join("\0");
+    if (!recentSites || refresh || key !== recentSitesKey) {
+      recentSitesKey = key;
       recentSites = new Promise((resolve, reject) => {
         if (!chrome.history?.search) {
           reject(new Error("\u6D4F\u89C8\u5668\u672A\u5F00\u653E\u5386\u53F2\u8BB0\u5F55\u8BBF\u95EE"));
@@ -1558,7 +1802,7 @@
         }
         chrome.history.search({ text: "", startTime: Date.now() - 30 * 24 * 60 * 60 * 1e3, maxResults: 3e3 }, (items) => {
           if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-          else resolve(rankSites(items ?? []));
+          else resolve(rankSites(items ?? [], new Set(excluded)));
         });
       });
       recentSites.catch(() => {
@@ -1567,11 +1811,14 @@
     }
     return recentSites;
   }
-  var recentSites;
+  var MAX_RECENT_SITES, recentSites, recentSitesKey;
   var init_history = __esm({
     "src/core/history.ts"() {
       "use strict";
+      init_store();
+      MAX_RECENT_SITES = 20;
       recentSites = null;
+      recentSitesKey = "";
     }
   });
 
@@ -1616,8 +1863,19 @@
   function siteMenu(source, site, at) {
     openMenu([
       { label: "\u5728\u65B0\u6807\u7B7E\u9875\u6253\u5F00", icon: ICONS.open, action: () => openInNewTab(site.url) },
-      { label: "\u6DFB\u52A0\u5230\u4E66\u7B7E", icon: ICONS.plus, action: () => openBookmarkDialog(source, { draft: { url: site.url, name: site.title } }) }
+      { label: "\u6DFB\u52A0\u5230\u4E66\u7B7E", icon: ICONS.plus, action: () => openBookmarkDialog(source, { draft: { url: site.url, name: site.title } }) },
+      { separator: true },
+      { label: "\u4ECE\u5E38\u8BBF\u95EE\u79FB\u9664", icon: ICONS.trash, danger: true, action: () => void removeRecentSite(site) }
     ], at);
+  }
+  async function removeRecentSite(site) {
+    try {
+      if (await appStore.removeRecentSite(site.host)) {
+        notify(`\u5DF2\u4ECE\u5E38\u8BBF\u95EE\u79FB\u9664\u201C${site.title || site.host}\u201D`, "info");
+      }
+    } catch (error) {
+      notifyError(error);
+    }
   }
   async function moveBookmark(id, folder, targetId) {
     try {
@@ -1763,6 +2021,10 @@
   });
 
   // src/components/bookmark-launchpad.ts
+  function wheelPixels(event, page, raw) {
+    const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? page : 1;
+    return raw * scale;
+  }
   var BookmarkLaunchpad;
   var init_bookmark_launchpad = __esm({
     "src/components/bookmark-launchpad.ts"() {
@@ -1783,6 +2045,7 @@
         draggingId = null;
         draggingFolder = null;
         recent = { sites: [], state: "idle", error: "" };
+        recentKey = "";
         releaseLayer = null;
         connectedCallback() {
           this.hidden = true;
@@ -1823,14 +2086,20 @@
           if (!this.isOpen) return;
           if (!appStore.state.folders.includes(this.folder)) this.folder = ROOT_FOLDER;
           if (!appStore.state.settings.layout.showRecent) this.view = "bookmarks";
+          const recentKey = appStore.state.settings.layout.recentExcluded.join("\0");
+          if (recentKey !== this.recentKey) {
+            this.recentKey = recentKey;
+            this.recent = { sites: [], state: "idle", error: "" };
+          }
           if (this.view === "recent" && this.recent.state === "idle") void this.loadRecent();
           if (!this.querySelector(".launchpad")) this.renderShell();
           const grid = this.querySelector(".launchpad-grid");
           const scroll = grid.scrollTop;
-          this.querySelector(".launchpad-tabs").innerHTML = this.tabsTemplate();
+          this.querySelector(".launchpad-tab-track").innerHTML = this.tabsTemplate();
           grid.dataset.view = this.query ? "search" : this.view;
           grid.innerHTML = this.gridTemplate();
           grid.scrollTop = scroll;
+          this.revealActiveTab();
           bindSiteIcons(this);
           this.querySelectorAll(".bookmark-tile").forEach((card) => this.bindBookmark(card));
           this.querySelectorAll("[data-drop-folder]").forEach((target) => this.bindFolderDrop(target));
@@ -1846,7 +2115,9 @@
                         ${ICONS.search}
                         <input type="search" placeholder="\u5728\u4E66\u7B7E\u4E2D\u641C\u7D22" aria-label="\u5728\u4E66\u7B7E\u4E2D\u641C\u7D22" autocomplete="off" spellcheck="false">
                     </label>
-                    <div class="glass launchpad-tabs" role="tablist" aria-label="\u4E66\u7B7E\u5206\u7EC4"></div>
+                    <div class="glass launchpad-tabs" role="tablist" aria-label="\u4E66\u7B7E\u5206\u7EC4">
+                        <div class="launchpad-tab-track"></div>
+                    </div>
                 </header>
                 <button class="glass launchpad-done" type="button" data-liquid-item>\u5B8C\u6210</button>
                 <div class="launchpad-grid"></div>
@@ -1930,6 +2201,17 @@
             this.render();
           });
           const tabs = this.querySelector(".launchpad-tabs");
+          const track = this.querySelector(".launchpad-tab-track");
+          track.addEventListener("scroll", () => this.syncTabOverflow(), { passive: true });
+          tabs.addEventListener("wheel", (event) => {
+            if (event.ctrlKey || event.shiftKey) return;
+            const raw = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+            const step = wheelPixels(event, track.clientWidth, raw);
+            if (!step) return;
+            const before = track.scrollLeft;
+            track.scrollLeft = before + step;
+            if (track.scrollLeft !== before) event.preventDefault();
+          }, { passive: false });
           tabs.addEventListener("click", (event) => {
             const button = event.target.closest(".launchpad-tab");
             if (!button) return;
@@ -1972,6 +2254,15 @@
             const id = this.dragId(event);
             if (id !== null) void moveBookmark(id, this.folder);
           });
+          this.querySelector(".launchpad")?.addEventListener("wheel", (event) => {
+            if (event.defaultPrevented || event.ctrlKey) return;
+            if (event.target instanceof Node && grid.contains(event.target)) return;
+            const step = wheelPixels(event, grid.clientHeight, event.deltaY);
+            if (!step) return;
+            const before = grid.scrollTop;
+            grid.scrollTop = before + step;
+            if (grid.scrollTop !== before) event.preventDefault();
+          }, { passive: false });
           this.querySelector(".launchpad")?.addEventListener("contextmenu", (event) => {
             const mouse = event;
             const target = mouse.target;
@@ -2080,10 +2371,34 @@
         clearTabDropHints() {
           this.querySelectorAll(".drop-before, .drop-after").forEach((item) => item.classList.remove("drop-before", "drop-after"));
         }
+        /** 标签超出宽度时在两侧留渐隐，提示这一头还能继续滑；滑到头就收掉对应一侧。 */
+        syncTabOverflow() {
+          const track = this.querySelector(".launchpad-tab-track");
+          if (!track) return;
+          const max = track.scrollWidth - track.clientWidth;
+          track.classList.toggle("has-more-left", track.scrollLeft > 1);
+          track.classList.toggle("has-more-right", track.scrollLeft < max - 1);
+        }
+        /** 选中的标签可能在可视范围之外（文件夹多的时候），渲染后把它滑回可见区域。 */
+        revealActiveTab() {
+          const track = this.querySelector(".launchpad-tab-track");
+          const active = track?.querySelector(".launchpad-tab.is-active");
+          if (!track || !active) return;
+          const box = track.getBoundingClientRect();
+          const tab = active.getBoundingClientRect();
+          if (tab.left < box.left) track.scrollLeft -= box.left - tab.left + 8;
+          else if (tab.right > box.right) track.scrollLeft += tab.right - box.right + 8;
+          this.syncTabOverflow();
+        }
         openTileMenu(tile, at) {
           const folder = tile.dataset.folder;
           if (folder !== void 0) {
-            if (folder === ROOT_FOLDER) return;
+            if (folder === ROOT_FOLDER) {
+              openMenu([
+                { label: "\u6253\u5F00", icon: ICONS.open, action: () => this.show("bookmarks", ROOT_FOLDER) }
+              ], at);
+              return;
+            }
             const order = folderTabOrder();
             const index = order.indexOf(folder);
             openMenu([
@@ -2192,7 +2507,7 @@
   });
 
   // src/components/home-dock.ts
-  var MAX_ITEMS, HomeDock;
+  var MAX_BOOKMARK_ITEMS, HomeDock;
   var init_home_dock = __esm({
     "src/components/home-dock.ts"() {
       "use strict";
@@ -2203,14 +2518,22 @@
       init_bookmark_actions();
       init_icons();
       init_site_icon();
-      MAX_ITEMS = 12;
+      MAX_BOOKMARK_ITEMS = 12;
       HomeDock = class extends StoreElement {
         observedChanges = ["bookmarks", "settings.layout"];
         sites = null;
         loadingSites = false;
+        recentKey = "";
         render() {
-          const { showBookmarks, showRecent, dockSize, dockMagnify, openInNewTab: openInNewTab2 } = appStore.state.settings.layout;
-          const dockSource = showRecent ? appStore.state.settings.layout.dockSource : "bookmarks";
+          const layout = appStore.state.settings.layout;
+          const { showBookmarks, showRecent, dockSize, dockMagnify, openInNewTab: openInNewTab2 } = layout;
+          const recentKey = layout.recentExcluded.join("\0");
+          if (recentKey !== this.recentKey) {
+            this.recentKey = recentKey;
+            this.sites = null;
+            this.loadingSites = false;
+          }
+          const dockSource = showRecent ? layout.dockSource : "bookmarks";
           this.hidden = !showBookmarks;
           if (this.hidden) {
             this.innerHTML = "";
@@ -2220,12 +2543,13 @@
           this.classList.toggle("is-magnifying", dockMagnify);
           const target = openInNewTab2 ? 'target="_blank"' : "";
           let items = "";
+          const maxItems = dockSource === "recent" ? MAX_RECENT_SITES : MAX_BOOKMARK_ITEMS;
           if (dockSource === "recent") {
             if (!this.sites && !this.loadingSites) void this.loadSites();
             if (!this.sites) {
-              items = Array.from({ length: MAX_ITEMS }, () => '<span class="dock-slot" aria-hidden="true"></span>').join("");
+              items = Array.from({ length: maxItems }, () => '<span class="dock-slot" aria-hidden="true"></span>').join("");
             } else {
-              const sites = this.sites.slice(0, MAX_ITEMS);
+              const sites = this.sites.slice(0, maxItems);
               items = sites.map((site, index) => `
                 <a class="dock-item" href="${escapeHtml(site.url)}" ${target} rel="noopener noreferrer" data-site-index="${index}" data-liquid-item aria-label="${escapeHtml(site.title)}" draggable="false">
                     ${siteIcon({ url: site.url, name: site.title })}
@@ -2253,7 +2577,7 @@
           this.bindEvents();
         }
         bookmarkItems(target) {
-          const bookmarks = bookmarksIn(ROOT_FOLDER).slice(0, MAX_ITEMS);
+          const bookmarks = bookmarksIn(ROOT_FOLDER).slice(0, MAX_BOOKMARK_ITEMS);
           if (!bookmarks.length) return `
                 <button class="dock-item dock-add" type="button" data-liquid-item aria-label="\u6DFB\u52A0\u4E66\u7B7E">
                     <span class="app-icon app-icon-glass">${ICONS.plus}</span>
@@ -3630,6 +3954,248 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     }
   });
 
+  // src/core/base64.ts
+  function bytesToBase64(bytes) {
+    const chunkSize = 32768;
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+  }
+  function base64ToBytes(value) {
+    const binary = atob(value);
+    const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+  var init_base64 = __esm({
+    "src/core/base64.ts"() {
+      "use strict";
+    }
+  });
+
+  // src/core/webdav-bridge.ts
+  function isWebDavResponseMessage(value) {
+    if (!value || typeof value !== "object") return false;
+    const message = value;
+    if (typeof message.error === "string") return true;
+    return typeof message.status === "number" && typeof message.ok === "boolean" && (message.body === null || typeof message.body === "string");
+  }
+  var WEBDAV_REQUEST_TYPE;
+  var init_webdav_bridge = __esm({
+    "src/core/webdav-bridge.ts"() {
+      "use strict";
+      WEBDAV_REQUEST_TYPE = "infinity-newtab-webdav-request";
+    }
+  });
+
+  // src/core/webdav.ts
+  function sanitizeWebDavAccount(value) {
+    const record = isRecord(value) ? value : {};
+    const username = typeof record.username === "string" ? record.username.trim().slice(0, MAX_CREDENTIAL_LENGTH) : "";
+    const password = typeof record.password === "string" ? record.password.slice(0, MAX_CREDENTIAL_LENGTH) : "";
+    const file = sanitizeFileName(typeof record.file === "string" ? record.file : "");
+    return {
+      url: sanitizeBaseUrl(typeof record.url === "string" ? record.url : ""),
+      username,
+      password,
+      file
+    };
+  }
+  function sanitizeBaseUrl(value) {
+    const candidate = value.trim().slice(0, MAX_URL_LENGTH);
+    if (!candidate) return "";
+    try {
+      const url = new URL(candidate);
+      if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+      url.username = "";
+      url.password = "";
+      return url.href.replace(/\/+$/, "");
+    } catch {
+      return "";
+    }
+  }
+  function sanitizeFileName(value) {
+    const file = value.trim().slice(0, MAX_FILE_LENGTH);
+    return file && file !== "." && file !== ".." && !UNUSABLE_FILE_NAME.test(file) ? file : DEFAULT_WEBDAV_FILE;
+  }
+  function webDavHref(account) {
+    return `${account.url}/${sanitizeFileName(account.file)}`;
+  }
+  async function loadWebDavAccount() {
+    const value = await storageGet(WEBDAV_STORAGE_KEY, "local");
+    const account = sanitizeWebDavAccount(value[WEBDAV_STORAGE_KEY]);
+    return account.url ? account : null;
+  }
+  async function saveWebDavAccount(account) {
+    await storageSet({ [WEBDAV_STORAGE_KEY]: sanitizeWebDavAccount(account) }, "local");
+  }
+  async function uploadBackup(account, data) {
+    const body = new Blob([JSON.stringify(data)], { type: "application/json" });
+    const response = await request(account, { method: "PUT", headers: { "Content-Type": "application/json" }, body }, UPLOAD_TIMEOUT);
+    if (!response.ok) throw describeStatus(response.status, "\u4E0A\u4F20");
+    return body.size;
+  }
+  async function downloadBackup(account) {
+    const response = await request(account, { method: "GET" }, DOWNLOAD_TIMEOUT);
+    if (!response.ok) throw describeStatus(response.status, "\u4E0B\u8F7D");
+    return response.blob();
+  }
+  async function deleteBackup(account) {
+    const response = await request(account, { method: "DELETE" }, QUICK_TIMEOUT);
+    if (response.status === 404) return false;
+    if (!response.ok) throw describeStatus(response.status, "\u5220\u9664");
+    return true;
+  }
+  async function inspectBackup(account) {
+    const response = await request(account, {
+      method: "PROPFIND",
+      headers: { Depth: "0", Accept: "application/xml, text/xml", "Content-Type": "application/xml" },
+      body: PROPFIND_BODY
+    }, QUICK_TIMEOUT);
+    if (response.status === 404) return null;
+    if (!response.ok) throw describeStatus(response.status, "\u8BFB\u53D6");
+    return parsePropFind(await response.text(), sanitizeFileName(account.file));
+  }
+  async function request(account, init, timeout) {
+    if (usesBackgroundChannel(account.url)) {
+      const result = await sendToBackground(account, init, timeout);
+      if ("error" in result) throw new Error(result.error);
+      return new Response(result.body ? base64ToBytes(result.body) : null, { status: result.status });
+    }
+    try {
+      return await fetch(webDavHref(account), {
+        ...init,
+        headers: { ...initHeaders(init), ...authHeader(account) },
+        signal: AbortSignal.timeout(timeout)
+      });
+    } catch (error) {
+      throw describeTransportError(error);
+    }
+  }
+  async function ensureWebDavAccess(account) {
+    if (usesBackgroundChannel(account.url)) return true;
+    const origin = originPatternOf(account.url);
+    const permissions = chrome.permissions;
+    if (typeof permissions?.request !== "function") {
+      console.warn("[WebDAV] chrome.permissions.request \u4E0D\u5B58\u5728 \u2014\u2014 \u6269\u5C55\u53EF\u80FD\u4E0D\u662F\u6700\u65B0\u7248\u672C\uFF0C\u8BF7\u5230 chrome://extensions \u91CD\u65B0\u52A0\u8F7D");
+      return false;
+    }
+    let granted = false;
+    try {
+      granted = await permissions.request({ origins: [origin] });
+    } catch (error) {
+      console.warn("[WebDAV] \u6743\u9650\u8BF7\u6C42\u629B\u51FA\u5F02\u5E38:", error);
+      return false;
+    }
+    const manifest = chrome.runtime.getManifest?.();
+    console.info(
+      `[WebDAV] \u7F51\u7EDC\u6743\u9650: ${granted ? "\u5DF2\u5141\u8BB8" : "\u672A\u5141\u8BB8"} ${origin} | ${String(manifest?.name ?? "\u672A\u77E5\u6269\u5C55")} v${String(manifest?.version ?? "?")} | optional_host_permissions=${JSON.stringify(manifest?.optional_host_permissions ?? "\u672A\u58F0\u660E")} | service_worker=${JSON.stringify(manifest?.background ?? "\u672A\u58F0\u660E")}`
+    );
+    return granted;
+  }
+  function usesBackgroundChannel(url) {
+    const runtime = chrome.runtime;
+    if (typeof runtime.hasHostPermission !== "function" || typeof runtime.sendMessage !== "function") return false;
+    try {
+      return runtime.hasHostPermission({ origins: [originPatternOf(url)] });
+    } catch {
+      return false;
+    }
+  }
+  async function sendToBackground(account, init, timeout) {
+    const message = {
+      type: WEBDAV_REQUEST_TYPE,
+      method: init.method ?? "GET",
+      url: webDavHref(account),
+      headers: { ...initHeaders(init), ...authHeader(account) },
+      body: await bodyToBase64(init.body),
+      timeout
+    };
+    try {
+      const result = await chrome.runtime.sendMessage(message);
+      return isWebDavResponseMessage(result) ? result : { error: "\u540E\u53F0\u670D\u52A1\u672A\u54CD\u5E94\uFF1A\u8BF7\u5728 chrome://extensions \u91CD\u65B0\u52A0\u8F7D\u672C\u6269\u5C55\u540E\u91CD\u8BD5" };
+    } catch {
+      return { error: "\u540E\u53F0\u670D\u52A1\u672A\u54CD\u5E94\uFF1A\u8BF7\u5728 chrome://extensions \u91CD\u65B0\u52A0\u8F7D\u672C\u6269\u5C55\u540E\u91CD\u8BD5" };
+    }
+  }
+  async function bodyToBase64(body) {
+    if (body == null) return null;
+    if (body instanceof Blob) return bytesToBase64(new Uint8Array(await body.arrayBuffer()));
+    if (typeof body === "string") return bytesToBase64(new TextEncoder().encode(body));
+    return null;
+  }
+  function originPatternOf(url) {
+    try {
+      return `${new URL(url).origin}/*`;
+    } catch {
+      return url;
+    }
+  }
+  function initHeaders(init) {
+    if (!init.headers) return {};
+    if (init.headers instanceof Headers) return Object.fromEntries([...init.headers.entries()]);
+    if (Array.isArray(init.headers)) return Object.fromEntries(init.headers);
+    return { ...init.headers };
+  }
+  function authHeader(account) {
+    if (!account.username && !account.password) return {};
+    return { Authorization: `Basic ${bytesToBase64(new TextEncoder().encode(`${account.username}:${account.password}`))}` };
+  }
+  function parsePropFind(text, fallback) {
+    let document2;
+    try {
+      document2 = new DOMParser().parseFromString(text, "application/xml");
+    } catch {
+      return null;
+    }
+    if (/404\s+Not Found/i.test(document2.getElementsByTagName("d:status")[0]?.textContent ?? "")) return null;
+    const entry = document2.getElementsByTagName("d:response")[0] ?? document2.documentElement;
+    if (!entry) return null;
+    const pick = (tag) => entry.getElementsByTagName(tag)[0]?.textContent ?? "";
+    const href = pick("d:href").split("\0")[0].trim();
+    const display = pick("d:displayname").trim();
+    return {
+      href,
+      name: display || href.split("/").pop() || fallback,
+      size: Number(pick("d:getcontentlength").trim()) || 0,
+      modified: pick("d:getlastmodified").trim()
+    };
+  }
+  function describeStatus(status, action) {
+    if (status === 401) return new Error("\u8BA4\u8BC1\u5931\u8D25\uFF1A\u8D26\u6237\u6216\u5BC6\u7801\u4E0D\u6B63\u786E");
+    if (status === 403) return new Error("\u670D\u52A1\u5668\u62D2\u7EDD\u8BBF\u95EE\uFF1A\u68C0\u67E5\u8D26\u53F7\u6743\u9650\uFF0C\u4EE5\u53CA\u670D\u52A1\u5668\u662F\u5426\u5141\u8BB8\u8DE8\u57DF\u8BBF\u95EE");
+    if (status === 404) return new Error("\u670D\u52A1\u5668\u4E0A\u6CA1\u6709\u627E\u5230\u8FD9\u4E2A\u5907\u4EFD\u6587\u4EF6");
+    if (status === 405) return new Error("\u670D\u52A1\u5668\u4E0D\u5141\u8BB8\u8FD9\u79CD\u65B9\u6CD5\uFF0C\u53EF\u80FD\u586B\u7684\u4E0D\u662F WebDAV \u7AEF\u70B9");
+    if (status === 507) return new Error("\u670D\u52A1\u5668\u5B58\u50A8\u7A7A\u95F4\u4E0D\u8DB3");
+    return new Error(`${action}\u5931\u8D25\uFF1A\u670D\u52A1\u5668\u8FD4\u56DE ${status}`);
+  }
+  function describeTransportError(error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") return new Error("\u8BF7\u6C42\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u54CD\u5E94\u592A\u6162");
+    return new Error("\u65E0\u6CD5\u8FDE\u63A5\u670D\u52A1\u5668\uFF1A\u670D\u52A1\u5668\u4E0D\u5141\u8BB8\u8DE8\u57DF\uFF08CORS\uFF09\u3002\u518D\u70B9\u4E00\u6B21\u300C\u4FDD\u5B58\u5E76\u6D4B\u8BD5\u300D\u5E76\u5141\u8BB8\u7F51\u7EDC\u6743\u9650\uFF0C\u8BF7\u6C42\u4F1A\u6539\u8D70\u540E\u53F0\u901A\u9053");
+  }
+  var WEBDAV_STORAGE_KEY, DEFAULT_WEBDAV_FILE, QUICK_TIMEOUT, DOWNLOAD_TIMEOUT, UPLOAD_TIMEOUT, MAX_URL_LENGTH, MAX_CREDENTIAL_LENGTH, MAX_FILE_LENGTH, PROPFIND_BODY, UNUSABLE_FILE_NAME;
+  var init_webdav = __esm({
+    "src/core/webdav.ts"() {
+      "use strict";
+      init_base64();
+      init_backup();
+      init_storage();
+      init_webdav_bridge();
+      WEBDAV_STORAGE_KEY = "webdav";
+      DEFAULT_WEBDAV_FILE = "infinity-newtab-backup.json";
+      QUICK_TIMEOUT = 2e4;
+      DOWNLOAD_TIMEOUT = 12e4;
+      UPLOAD_TIMEOUT = 24e4;
+      MAX_URL_LENGTH = 400;
+      MAX_CREDENTIAL_LENGTH = 200;
+      MAX_FILE_LENGTH = 120;
+      PROPFIND_BODY = '<d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:getcontentlength/><d:getlastmodified/><d:resourcetype/></d:prop></d:propfind>';
+      UNUSABLE_FILE_NAME = /[\s/\\?*|#:"<>|]/;
+    }
+  });
+
   // src/components/settings-panel.ts
   function pane(name, title, body) {
     return `<section class="settings-pane" data-pane="${name}" aria-label="${title}" hidden><h2 class="settings-pane-title">${title}</h2>${body}</section>`;
@@ -3681,7 +4247,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     if (!hdrDisplay) return "\u5F53\u524D\u4E3A SDR \u5C4F\u5E55\uFF0C\u8FDE\u63A5 HDR \u5C4F\u5E55\u540E\u81EA\u52A8\u751F\u6548";
     return "gpu" in navigator ? "\u5F53\u524D\u5C4F\u5E55\u652F\u6301 HDR \xB7 WebGPU \u5DF2\u542F\u7528" : "\u5F53\u524D\u5C4F\u5E55\u652F\u6301 HDR \xB7 \u6D4F\u89C8\u5668\u672A\u5F00\u653E WebGPU \u9AD8\u5149";
   }
-  function formatBytes(bytes) {
+  function formatBytes2(bytes) {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
@@ -3697,6 +4263,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
       init_backup_service();
       init_media_store();
       init_store();
+      init_webdav();
       init_utils();
       init_wallpaper_service();
       init_base();
@@ -3811,6 +4378,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 ${rangeRow("dockSize", "\u56FE\u6807\u5927\u5C0F", layout.dockSize, 40, 72, "", "showBookmarks")}
                 ${toggleRow("dockMagnify", "\u60AC\u505C\u653E\u5927", "", "showBookmarks")}
                 ${toggleRow("openInNewTab", "\u5728\u65B0\u6807\u7B7E\u9875\u6253\u5F00\u4E66\u7B7E")}
+                ${infoRow("\u9690\u85CF\u7684\u5E38\u8BBF\u95EE\u7AD9\u70B9", `\u5728\u5E38\u8BBF\u95EE\u7AD9\u70B9\u4E0A\u53F3\u952E\u201C\u4ECE\u5E38\u8BBF\u95EE\u79FB\u9664\u201D\u4F1A\u9690\u85CF\u5728\u8FD9\u91CC\uFF0C\u5171 ${layout.recentExcluded.length} \u4E2A`, `<button class="pill-button restore-recent" type="button" data-liquid-item${layout.recentExcluded.length ? "" : " disabled"}>\u6062\u590D\u5168\u90E8</button>`)}
             `)}
             ${group("\u641C\u7D22", `
                 ${segmentRow("searchEngine", "\u9ED8\u8BA4\u641C\u7D22\u5F15\u64CE", layout.searchEngine, Object.entries(ENGINES).map(([key, engine]) => [key, engine.label]))}
@@ -3857,10 +4425,35 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 ${infoRow("\u4FEE\u590D\u56FE\u6807", "\u6E05\u6389\u88AB\u591A\u4E2A\u4E0D\u540C\u7AD9\u70B9\u5171\u7528\u7684\u9519\u8BEF\u56FE\u6807\uFF0C\u6539\u56DE\u6309\u57DF\u540D\u81EA\u52A8\u83B7\u53D6", '<button class="pill-button fix-icons" type="button" data-liquid-item>\u4FEE\u590D\u2026</button>')}
                 ${toggleRow("backupReminder", "\u6BCF\u6708\u63D0\u9192\u6211\u5907\u4EFD")}
             `)}
+            ${group("WebDAV \u5907\u4EFD", `
+                ${this.webdavCard()}
+            `)}
             ${group("", `
                 ${infoRow("\u6E05\u7A7A\u6240\u6709\u6570\u636E", "\u5220\u9664\u4E66\u7B7E\u3001\u8BBE\u7F6E\u4E0E\u672C\u5730\u58C1\u7EB8\uFF0C\u65E0\u6CD5\u64A4\u9500", '<button class="pill-button danger reset-data" type="button" data-liquid-item>\u6E05\u7A7A\u2026</button>')}
             `)}
         `);
+        }
+        /** WebDAV form: fields are rebuilt with the panel, so values are re-synced on every open. */
+        webdavCard() {
+          return `<div class="setting-row webdav-card" data-search="webdav \u8FDC\u7A0B \u4E91 \u5907\u4EFD \u4E0A\u4F20 \u4E0B\u8F7D \u670D\u52A1\u5668 \u8D26\u53F7 \u5BC6\u7801">
+            <div class="webdav-heading">
+                ${rowLabel("\u8FDC\u7A0B\u5907\u4EFD", "\u5907\u4EFD\u5230\u81EA\u5DF1\u7684 WebDAV \u670D\u52A1\u5668\uFF0C\u8D26\u5BC6\u53EA\u5B58\u5728\u672C\u673A")}
+                <span class="webdav-status">\u672A\u914D\u7F6E</span>
+            </div>
+            <div class="webdav-fields">
+                <label class="webdav-field webdav-field--wide"><span>\u670D\u52A1\u5668\u5730\u5740</span><input class="webdav-url" type="text" placeholder="https://dav.example.com/remote.php/dav/files/me" spellcheck="false" autocomplete="off" aria-label="WebDAV \u670D\u52A1\u5668\u5730\u5740"></label>
+                <label class="webdav-field"><span>\u8D26\u6237</span><input class="webdav-user" type="text" spellcheck="false" autocomplete="off" aria-label="WebDAV \u8D26\u6237"></label>
+                <label class="webdav-field"><span>\u5BC6\u7801</span><input class="webdav-pass" type="password" autocomplete="new-password" aria-label="WebDAV \u5BC6\u7801"></label>
+                <label class="webdav-field webdav-field--wide"><span>\u8FDC\u7AEF\u6587\u4EF6\u540D</span><input class="webdav-file" type="text" value="${DEFAULT_WEBDAV_FILE}" spellcheck="false" autocomplete="off" aria-label="\u8FDC\u7AEF\u5907\u4EFD\u6587\u4EF6\u540D"></label>
+            </div>
+            <div class="webdav-actions">
+                <button class="pill-button webdav-save" type="button" data-liquid-item>\u4FDD\u5B58\u5E76\u6D4B\u8BD5</button>
+                <button class="pill-button webdav-upload" type="button" data-liquid-item disabled>\u4E0A\u4F20\u5907\u4EFD</button>
+                <button class="pill-button webdav-restore" type="button" data-liquid-item disabled>\u6062\u590D\u8FDC\u7AEF\u5907\u4EFD</button>
+                <button class="pill-button danger webdav-delete" type="button" data-liquid-item disabled>\u5220\u9664\u8FDC\u7AEF\u5907\u4EFD</button>
+            </div>
+            <span class="webdav-note">\u4FDD\u5B58\u65F6\u4F1A\u8BF7\u6C42\u4E00\u6B21\u7F51\u7EDC\u6743\u9650\uFF0C\u6388\u4E88\u540E\u8BF7\u6C42\u8D70\u540E\u53F0\u901A\u9053\uFF0C\u4E0D\u53D7\u670D\u52A1\u5668\u8DE8\u57DF\u9650\u5236</span>
+        </div>`;
         }
         bindChrome() {
           this.querySelector(".settings-close")?.addEventListener("click", () => this.close());
@@ -3923,6 +4516,11 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           });
           this.querySelector(".random-wallpaper")?.addEventListener("click", (event) => void this.withBusy(event.currentTarget, useOnlineWallpaper));
           this.querySelector(".reset-wallpaper")?.addEventListener("click", () => void resetWallpaper().catch(notifyError));
+          this.querySelector(".restore-recent")?.addEventListener("click", () => {
+            void appStore.restoreRecentSites().then((count) => {
+              if (count) notify(`\u5DF2\u6062\u590D ${count} \u4E2A\u5E38\u8BBF\u95EE\u7AD9\u70B9`);
+            }).catch(notifyError);
+          });
           this.querySelector(".export-data")?.addEventListener("click", () => void backupService.createBackup().catch(notifyError));
           this.querySelector(".import-data input")?.addEventListener("change", (event) => {
             const input = event.target;
@@ -3932,6 +4530,10 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           });
           this.querySelector(".fix-icons")?.addEventListener("click", () => void this.fixIcons());
           this.querySelector(".reset-data")?.addEventListener("click", () => void this.resetData());
+          this.querySelector(".webdav-save")?.addEventListener("click", () => void this.saveWebDav());
+          this.querySelector(".webdav-upload")?.addEventListener("click", () => void this.uploadWebDav());
+          this.querySelector(".webdav-restore")?.addEventListener("click", () => void this.restoreWebDav());
+          this.querySelector(".webdav-delete")?.addEventListener("click", () => void this.deleteWebDav());
         }
         async fixIcons() {
           try {
@@ -4062,6 +4664,11 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           });
           const reset = this.querySelector(".reset-wallpaper");
           if (reset) reset.hidden = wallpaper.type === "gradient";
+          const restore = this.querySelector(".restore-recent");
+          if (restore) {
+            restore.disabled = !layout.recentExcluded.length;
+            restore.closest(".setting-row")?.querySelector(".row-sub")?.replaceChildren(`\u5728\u5E38\u8BBF\u95EE\u7AD9\u70B9\u4E0A\u53F3\u952E\u201C\u4ECE\u5E38\u8BBF\u95EE\u79FB\u9664\u201D\u4F1A\u9690\u85CF\u5728\u8FD9\u91CC\uFF0C\u5171 ${layout.recentExcluded.length} \u4E2A`);
+          }
           if (this.openState) void this.refreshPreview();
         }
         async withBusy(control, task) {
@@ -4136,7 +4743,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           const duration = this.querySelector(".wallpaper-duration");
           duration.hidden = true;
           name.textContent = type === "gradient" ? "Twilight Bay" : wallpaperLabel(wallpaper);
-          const size = blob ? ` \xB7 ${formatBytes(blob.size)}` : "";
+          const size = blob ? ` \xB7 ${formatBytes2(blob.size)}` : "";
           meta.textContent = type === "gradient" ? "\u5185\u7F6E\u52A8\u6001\u573A\u666F \xB7 \u4E0D\u5360\u7528\u4EFB\u4F55\u5B58\u50A8" : type === "preset" ? "\u5728\u7EBF\u56FE\u7247 \xB7 \u6BCF\u6B21\u6253\u5F00\u65F6\u4ECE\u7F51\u7EDC\u52A0\u8F7D" : `${type === "video" ? "\u89C6\u9891" : "\u56FE\u7247"}${size} \xB7 \u5DF2\u4FDD\u5B58\u5230\u672C\u673A`;
           if (type === "video" && this.previewUrl) {
             const video = document.createElement("video");
@@ -4174,12 +4781,13 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             Promise.all([mediaStore.get("image"), mediaStore.get("video")]).catch(() => [null, null])
           ]);
           const usage = this.querySelector(".sync-usage");
-          if (usage) usage.textContent = bytes === null ? "" : `\u5DF2\u7528 ${formatBytes(bytes)} / 100 KB`;
+          if (usage) usage.textContent = bytes === null ? "" : `\u5DF2\u7528 ${formatBytes2(bytes)} / 100 KB`;
           const mediaUsage = this.querySelector(".media-usage");
           if (mediaUsage) {
             const total = media.reduce((sum, blob) => sum + (blob?.size ?? 0), 0);
-            mediaUsage.textContent = total ? formatBytes(total) : "\u65E0";
+            mediaUsage.textContent = total ? formatBytes2(total) : "\u65E0";
           }
+          void this.refreshWebDav();
         }
         async importData(file) {
           const confirmed = await confirmAction({
@@ -4194,6 +4802,114 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           } catch (error) {
             notifyError(error);
           }
+        }
+        async readWebDavInputs() {
+          const card = this.querySelector(".webdav-card");
+          if (!card) return null;
+          const read = (selector) => card.querySelector(selector)?.value ?? "";
+          const account = sanitizeWebDavAccount({
+            url: read(".webdav-url"),
+            username: read(".webdav-user"),
+            password: read(".webdav-pass"),
+            file: read(".webdav-file")
+          });
+          if (!account.url) {
+            notify("\u8BF7\u586B\u5199 WebDAV \u670D\u52A1\u5668\u5730\u5740", "error");
+            return null;
+          }
+          return account;
+        }
+        /** Refills the form and decides which remote actions are available. */
+        async refreshWebDav() {
+          const card = this.querySelector(".webdav-card");
+          if (!card) return;
+          const fill = (selector, value) => {
+            const input = card.querySelector(selector);
+            if (input && document.activeElement !== input) input.value = value;
+          };
+          const account = await loadWebDavAccount().catch(() => null);
+          fill(".webdav-url", account?.url ?? "");
+          fill(".webdav-user", account?.username ?? "");
+          fill(".webdav-pass", account?.password ?? "");
+          fill(".webdav-file", account?.file ?? DEFAULT_WEBDAV_FILE);
+          const status = card.querySelector(".webdav-status");
+          if (status) status.textContent = account ? account.url : "\u672A\u914D\u7F6E";
+          const note = card.querySelector(".webdav-note");
+          if (note) {
+            note.textContent = !account ? "\u4FDD\u5B58\u65F6\u4F1A\u8BF7\u6C42\u4E00\u6B21\u7F51\u7EDC\u6743\u9650\uFF0C\u6388\u4E88\u540E\u8BF7\u6C42\u8D70\u540E\u53F0\u901A\u9053\uFF0C\u4E0D\u53D7\u670D\u52A1\u5668\u8DE8\u57DF\u9650\u5236" : usesBackgroundChannel(account.url) ? "\u8BF7\u6C42\u8D70\u540E\u53F0\u901A\u9053\uFF0C\u4E0D\u53D7\u670D\u52A1\u5668\u8DE8\u57DF\u9650\u5236" : "\u540E\u53F0\u901A\u9053\u672A\u542F\u7528\uFF1A\u4E0A\u4F20\u4F1A\u88AB\u8DE8\u57DF\u62E6\u622A\u3002\u518D\u70B9\u4E00\u6B21\u300C\u4FDD\u5B58\u5E76\u6D4B\u8BD5\u300D\uFF0C\u5E76\u5141\u8BB8 Chrome \u5F39\u51FA\u7684\u7F51\u7EDC\u6743\u9650\u8BF7\u6C42";
+          }
+          for (const selector of [".webdav-upload", ".webdav-restore", ".webdav-delete"]) {
+            const button = card.querySelector(selector);
+            if (button && !button.classList.contains("is-busy")) button.disabled = !account;
+          }
+        }
+        async saveWebDav() {
+          const button = this.querySelector(".webdav-save");
+          const account = await this.readWebDavInputs();
+          if (!account) return;
+          await this.withBusy(button, async () => {
+            const background = await ensureWebDavAccess(account);
+            await saveWebDavAccount(account);
+            const info = await inspectBackup(account).catch(() => null);
+            const remote = info ? `\u8FDC\u7AEF\u5DF2\u6709 ${formatBytes2(info.size)} \u7684\u5907\u4EFD` : "\u8FDC\u7AEF\u8FD8\u6CA1\u6709\u5907\u4EFD\u6587\u4EF6";
+            notify(
+              background ? `\u5DF2\u4FDD\u5B58\uFF1A${remote}\u3002\u8BF7\u6C42\u8D70\u540E\u53F0\u901A\u9053\uFF0C\u4E0D\u53D7\u8DE8\u57DF\u9650\u5236` : `\u5DF2\u4FDD\u5B58\uFF1A${remote}\u3002\u4F46\u672A\u542F\u7528\u540E\u53F0\u901A\u9053\uFF0C\u4E0A\u4F20\u4ECD\u4F1A\u88AB\u8DE8\u57DF\u62E6\u622A`,
+              background ? "success" : "info"
+            );
+            await this.refreshWebDav();
+          });
+        }
+        async uploadWebDav() {
+          const account = await loadWebDavAccount();
+          if (!account) return;
+          const button = this.querySelector(".webdav-upload");
+          await this.withBusy(button, async () => {
+            const data = await backupService.exportData();
+            const bytes = await uploadBackup(account, data);
+            const info = await inspectBackup(account).catch(() => null);
+            console.info(`[WebDAV] \u4E0A\u4F20 ${bytes} \u5B57\u8282${info ? `\uFF0C\u670D\u52A1\u5668\u62A5\u544A ${info.size} \u5B57\u8282` : "\uFF0C\u670D\u52A1\u5668\u672A\u8FD4\u56DE\u6587\u4EF6\u5927\u5C0F"}`);
+            notify(`\u5DF2\u4E0A\u4F20 ${formatBytes2(bytes)} \u5230 WebDAV`, "success");
+            await this.refreshWebDav();
+          });
+        }
+        async restoreWebDav() {
+          const account = await loadWebDavAccount();
+          if (!account) return;
+          const button = this.querySelector(".webdav-restore");
+          await this.withBusy(button, async () => {
+            const blob = await downloadBackup(account);
+            let backupData;
+            try {
+              backupData = JSON.parse(await blob.text());
+            } catch {
+              throw new Error("\u8FDC\u7AEF\u5907\u4EFD\u4E0D\u662F\u6709\u6548\u7684 JSON");
+            }
+            const confirmed = await confirmAction({
+              title: "\u4ECE WebDAV \u6062\u590D\uFF1F",
+              body: "\u8FDC\u7AEF\u5907\u4EFD\u7684\u4E66\u7B7E\u3001\u8BBE\u7F6E\u548C\u672C\u5730\u58C1\u7EB8\u4F1A\u8986\u76D6\u5F53\u524D\u6570\u636E\u3002",
+              confirmText: "\u6062\u590D"
+            });
+            if (!confirmed) return;
+            await backupService.importData(backupData);
+            notify("\u5DF2\u4ECE WebDAV \u6062\u590D", "success");
+          });
+        }
+        async deleteWebDav() {
+          const account = await loadWebDavAccount();
+          if (!account) return;
+          const confirmed = await confirmAction({
+            title: "\u5220\u9664\u8FDC\u7AEF\u5907\u4EFD\uFF1F",
+            body: "\u670D\u52A1\u5668\u4E0A\u7684\u5907\u4EFD\u6587\u4EF6\u4F1A\u88AB\u5220\u9664\uFF0C\u672C\u673A\u6570\u636E\u4E0D\u53D7\u5F71\u54CD\uFF0C\u65E0\u6CD5\u64A4\u9500\u3002",
+            confirmText: "\u5220\u9664",
+            danger: true
+          });
+          if (!confirmed) return;
+          const button = this.querySelector(".webdav-delete");
+          await this.withBusy(button, async () => {
+            const existed = await deleteBackup(account);
+            notify(existed ? "\u5DF2\u5220\u9664\u8FDC\u7AEF\u5907\u4EFD" : "\u8FDC\u7AEF\u672C\u6765\u5C31\u6CA1\u6709\u5907\u4EFD\u6587\u4EF6", existed ? "success" : "info");
+            await this.refreshWebDav();
+          });
         }
         async resetData() {
           const confirmed = await confirmAction({

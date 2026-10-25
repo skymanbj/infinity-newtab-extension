@@ -1,13 +1,13 @@
 {
   "name": "infinity-newtab-extension",
-  "version": "3.1.1",
+  "version": "3.2.1",
   "description": "TypeScript 与原生 Web Components 打造的二次元 Chrome 新标签页，支持书签启动台、动态壁纸与 Liquid Glass HDR。",
   "main": "modules/app.js",
   "directories": {
     "test": "tests"
   },
   "scripts": {
-    "build": "esbuild src/app.ts --bundle --format=iife --target=chrome120 --outfile=modules/app.js",
+    "build": "esbuild src/app.ts --bundle --format=iife --target=chrome120 --outfile=modules/app.js && esbuild src/background.ts --bundle --format=iife --target=chrome120 --outfile=modules/background.js",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && npm run typecheck && npm run test:unit && npm run test:e2e",
     "test:unit": "esbuild tests/unit-entry.ts --bundle --platform=node --format=cjs --target=node22 --outfile=tests/.unit.cjs && node tests/.unit.cjs && rm tests/.unit.cjs",

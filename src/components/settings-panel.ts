@@ -1,7 +1,20 @@
 import { backupService } from '../core/backup-service';
 import { mediaStore } from '../core/media-store';
 import { appStore } from '../core/store';
-import type { AppSettings } from '../core/types';
+import type { AppSettings, BackupData } from '../core/types';
+import {
+    DEFAULT_WEBDAV_FILE,
+    type WebDavAccount,
+    deleteBackup,
+    downloadBackup,
+    ensureWebDavAccess,
+    inspectBackup,
+    loadWebDavAccount,
+    sanitizeWebDavAccount,
+    saveWebDavAccount,
+    uploadBackup,
+    usesBackgroundChannel
+} from '../core/webdav';
 import { escapeHtml } from '../core/utils';
 import { resetWallpaper, useLocalWallpaper, useOnlineWallpaper, wallpaperLabel } from '../core/wallpaper-service';
 import { StoreElement } from './base';
@@ -129,6 +142,7 @@ export class SettingsPanel extends StoreElement {
                 ${rangeRow('dockSize', '图标大小', layout.dockSize, 40, 72, '', 'showBookmarks')}
                 ${toggleRow('dockMagnify', '悬停放大', '', 'showBookmarks')}
                 ${toggleRow('openInNewTab', '在新标签页打开书签')}
+                ${infoRow('隐藏的常访问站点', `在常访问站点上右键“从常访问移除”会隐藏在这里，共 ${layout.recentExcluded.length} 个`, `<button class="pill-button restore-recent" type="button" data-liquid-item${layout.recentExcluded.length ? '' : ' disabled'}>恢复全部</button>`)}
             `)}
             ${group('搜索', `
                 ${segmentRow('searchEngine', '默认搜索引擎', layout.searchEngine, Object.entries(ENGINES).map(([key, engine]) => [key, engine.label] as Option))}
@@ -177,10 +191,36 @@ export class SettingsPanel extends StoreElement {
                 ${infoRow('修复图标', '清掉被多个不同站点共用的错误图标，改回按域名自动获取', '<button class="pill-button fix-icons" type="button" data-liquid-item>修复…</button>')}
                 ${toggleRow('backupReminder', '每月提醒我备份')}
             `)}
+            ${group('WebDAV 备份', `
+                ${this.webdavCard()}
+            `)}
             ${group('', `
                 ${infoRow('清空所有数据', '删除书签、设置与本地壁纸，无法撤销', '<button class="pill-button danger reset-data" type="button" data-liquid-item>清空…</button>')}
             `)}
         `);
+    }
+
+    /** WebDAV form: fields are rebuilt with the panel, so values are re-synced on every open. */
+    private webdavCard(): string {
+        return `<div class="setting-row webdav-card" data-search="webdav 远程 云 备份 上传 下载 服务器 账号 密码">
+            <div class="webdav-heading">
+                ${rowLabel('远程备份', '备份到自己的 WebDAV 服务器，账密只存在本机')}
+                <span class="webdav-status">未配置</span>
+            </div>
+            <div class="webdav-fields">
+                <label class="webdav-field webdav-field--wide"><span>服务器地址</span><input class="webdav-url" type="text" placeholder="https://dav.example.com/remote.php/dav/files/me" spellcheck="false" autocomplete="off" aria-label="WebDAV 服务器地址"></label>
+                <label class="webdav-field"><span>账户</span><input class="webdav-user" type="text" spellcheck="false" autocomplete="off" aria-label="WebDAV 账户"></label>
+                <label class="webdav-field"><span>密码</span><input class="webdav-pass" type="password" autocomplete="new-password" aria-label="WebDAV 密码"></label>
+                <label class="webdav-field webdav-field--wide"><span>远端文件名</span><input class="webdav-file" type="text" value="${DEFAULT_WEBDAV_FILE}" spellcheck="false" autocomplete="off" aria-label="远端备份文件名"></label>
+            </div>
+            <div class="webdav-actions">
+                <button class="pill-button webdav-save" type="button" data-liquid-item>保存并测试</button>
+                <button class="pill-button webdav-upload" type="button" data-liquid-item disabled>上传备份</button>
+                <button class="pill-button webdav-restore" type="button" data-liquid-item disabled>恢复远端备份</button>
+                <button class="pill-button danger webdav-delete" type="button" data-liquid-item disabled>删除远端备份</button>
+            </div>
+            <span class="webdav-note">保存时会请求一次网络权限，授予后请求走后台通道，不受服务器跨域限制</span>
+        </div>`;
     }
 
     private bindChrome(): void {
@@ -250,6 +290,11 @@ export class SettingsPanel extends StoreElement {
         });
         this.querySelector('.random-wallpaper')?.addEventListener('click', (event) => void this.withBusy(event.currentTarget as HTMLElement, useOnlineWallpaper));
         this.querySelector('.reset-wallpaper')?.addEventListener('click', () => void resetWallpaper().catch(notifyError));
+        this.querySelector('.restore-recent')?.addEventListener('click', () => {
+            void appStore.restoreRecentSites().then((count) => {
+                if (count) notify(`已恢复 ${count} 个常访问站点`);
+            }).catch(notifyError);
+        });
         this.querySelector('.export-data')?.addEventListener('click', () => void backupService.createBackup().catch(notifyError));
         this.querySelector<HTMLInputElement>('.import-data input')?.addEventListener('change', (event) => {
             const input = event.target as HTMLInputElement;
@@ -259,6 +304,10 @@ export class SettingsPanel extends StoreElement {
         });
         this.querySelector('.fix-icons')?.addEventListener('click', () => void this.fixIcons());
         this.querySelector('.reset-data')?.addEventListener('click', () => void this.resetData());
+        this.querySelector('.webdav-save')?.addEventListener('click', () => void this.saveWebDav());
+        this.querySelector('.webdav-upload')?.addEventListener('click', () => void this.uploadWebDav());
+        this.querySelector('.webdav-restore')?.addEventListener('click', () => void this.restoreWebDav());
+        this.querySelector('.webdav-delete')?.addEventListener('click', () => void this.deleteWebDav());
     }
 
     private async fixIcons(): Promise<void> {
@@ -395,6 +444,12 @@ export class SettingsPanel extends StoreElement {
         });
         const reset = this.querySelector<HTMLElement>('.reset-wallpaper');
         if (reset) reset.hidden = wallpaper.type === 'gradient';
+        const restore = this.querySelector<HTMLButtonElement>('.restore-recent');
+        if (restore) {
+            restore.disabled = !layout.recentExcluded.length;
+            restore.closest('.setting-row')?.querySelector('.row-sub')
+                ?.replaceChildren(`在常访问站点上右键“从常访问移除”会隐藏在这里，共 ${layout.recentExcluded.length} 个`);
+        }
         if (this.openState) void this.refreshPreview();
     }
 
@@ -516,6 +571,7 @@ export class SettingsPanel extends StoreElement {
             const total = media.reduce((sum, blob) => sum + (blob?.size ?? 0), 0);
             mediaUsage.textContent = total ? formatBytes(total) : '无';
         }
+        void this.refreshWebDav();
     }
 
     private async importData(file: File): Promise<void> {
@@ -529,6 +585,127 @@ export class SettingsPanel extends StoreElement {
             await backupService.importData(await backupService.read(file));
             notify('已从备份恢复', 'success');
         } catch (error) { notifyError(error); }
+    }
+
+    private async readWebDavInputs(): Promise<WebDavAccount | null> {
+        const card = this.querySelector<HTMLElement>('.webdav-card');
+        if (!card) return null;
+        const read = (selector: string) => card.querySelector<HTMLInputElement>(selector)?.value ?? '';
+        const account = sanitizeWebDavAccount({
+            url: read('.webdav-url'),
+            username: read('.webdav-user'),
+            password: read('.webdav-pass'),
+            file: read('.webdav-file')
+        });
+        if (!account.url) {
+            notify('请填写 WebDAV 服务器地址', 'error');
+            return null;
+        }
+        return account;
+    }
+
+    /** Refills the form and decides which remote actions are available. */
+    private async refreshWebDav(): Promise<void> {
+        const card = this.querySelector<HTMLElement>('.webdav-card');
+        if (!card) return;
+        const fill = (selector: string, value: string) => {
+            const input = card.querySelector<HTMLInputElement>(selector);
+            if (input && document.activeElement !== input) input.value = value;
+        };
+        const account = await loadWebDavAccount().catch(() => null);
+        fill('.webdav-url', account?.url ?? '');
+        fill('.webdav-user', account?.username ?? '');
+        fill('.webdav-pass', account?.password ?? '');
+        fill('.webdav-file', account?.file ?? DEFAULT_WEBDAV_FILE);
+        const status = card.querySelector('.webdav-status');
+        if (status) status.textContent = account ? account.url : '未配置';
+        const note = card.querySelector('.webdav-note');
+        if (note) {
+            note.textContent = !account
+                ? '保存时会请求一次网络权限，授予后请求走后台通道，不受服务器跨域限制'
+                : usesBackgroundChannel(account.url)
+                    ? '请求走后台通道，不受服务器跨域限制'
+                : '后台通道未启用：上传会被跨域拦截。再点一次「保存并测试」，并允许 Chrome 弹出的网络权限请求';
+        }
+        for (const selector of ['.webdav-upload', '.webdav-restore', '.webdav-delete']) {
+            const button = card.querySelector<HTMLButtonElement>(selector);
+            if (button && !button.classList.contains('is-busy')) button.disabled = !account;
+        }
+    }
+
+    private async saveWebDav(): Promise<void> {
+        const button = this.querySelector<HTMLButtonElement>('.webdav-save')!;
+        const account = await this.readWebDavInputs();
+        if (!account) return;
+        await this.withBusy(button, async () => {
+            // 询问一次网络权限，拿到后请求改走后台 service worker，不再受跨域限制。
+            const background = await ensureWebDavAccess(account);
+            await saveWebDavAccount(account);
+            const info = await inspectBackup(account).catch(() => null);
+            const remote = info ? `远端已有 ${formatBytes(info.size)} 的备份` : '远端还没有备份文件';
+            notify(background
+                ? `已保存：${remote}。请求走后台通道，不受跨域限制`
+                : `已保存：${remote}。但未启用后台通道，上传仍会被跨域拦截`,
+                background ? 'success' : 'info');
+            await this.refreshWebDav();
+        });
+    }
+
+    private async uploadWebDav(): Promise<void> {
+        const account = await loadWebDavAccount();
+        if (!account) return;
+        const button = this.querySelector<HTMLButtonElement>('.webdav-upload')!;
+        await this.withBusy(button, async () => {
+            const data: BackupData = await backupService.exportData();
+            const bytes = await uploadBackup(account, data);
+            const info = await inspectBackup(account).catch(() => null);
+            // 有些服务器不返回 getcontentlength，所以用本地实际发送的字节数报喜，
+            // 服务器报告的数字只写进日志，方便排查两边不一致的情况。
+            console.info(`[WebDAV] 上传 ${bytes} 字节${info ? `，服务器报告 ${info.size} 字节` : '，服务器未返回文件大小'}`);
+            notify(`已上传 ${formatBytes(bytes)} 到 WebDAV`, 'success');
+            await this.refreshWebDav();
+        });
+    }
+
+    private async restoreWebDav(): Promise<void> {
+        const account = await loadWebDavAccount();
+        if (!account) return;
+        const button = this.querySelector<HTMLButtonElement>('.webdav-restore')!;
+        await this.withBusy(button, async () => {
+            const blob = await downloadBackup(account);
+            let backupData: unknown;
+            try {
+                backupData = JSON.parse(await blob.text());
+            } catch {
+                throw new Error('远端备份不是有效的 JSON');
+            }
+            const confirmed = await confirmAction({
+                title: '从 WebDAV 恢复？',
+                body: '远端备份的书签、设置和本地壁纸会覆盖当前数据。',
+                confirmText: '恢复'
+            });
+            if (!confirmed) return;
+            await backupService.importData(backupData);
+            notify('已从 WebDAV 恢复', 'success');
+        });
+    }
+
+    private async deleteWebDav(): Promise<void> {
+        const account = await loadWebDavAccount();
+        if (!account) return;
+        const confirmed = await confirmAction({
+            title: '删除远端备份？',
+            body: '服务器上的备份文件会被删除，本机数据不受影响，无法撤销。',
+            confirmText: '删除',
+            danger: true
+        });
+        if (!confirmed) return;
+        const button = this.querySelector<HTMLButtonElement>('.webdav-delete')!;
+        await this.withBusy(button, async () => {
+            const existed = await deleteBackup(account);
+            notify(existed ? '已删除远端备份' : '远端本来就没有备份文件', existed ? 'success' : 'info');
+            await this.refreshWebDav();
+        });
     }
 
     private async resetData(): Promise<void> {

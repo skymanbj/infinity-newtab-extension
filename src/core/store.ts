@@ -1,4 +1,10 @@
-import { DEFAULT_SETTINGS, MAX_INLINE_ICON_LENGTH, sanitizeBookmarks, sanitizeSettings } from './backup';
+import {
+    DEFAULT_SETTINGS,
+    MAX_INLINE_ICON_LENGTH,
+    hasDuplicateBookmarkIds,
+    sanitizeBookmarks,
+    sanitizeSettings
+} from './backup';
 import {
     LEGACY_BOOKMARKS_KEY,
     decodeBookmarks,
@@ -6,7 +12,7 @@ import {
     staleBookmarkKeys,
     storedChunkCount
 } from './bookmark-storage';
-import { sharedIconUrls } from './icon-audit';
+import { sharedIconUrls, stripSharedIcons } from './icon-audit';
 import { storageClear, storageGet, storageRemove, storageSet } from './storage';
 import type { AppSettings, AppState, Bookmark, SettingsSection } from './types';
 import { cleanText, normalizeUrl, sanitizeRemoteUrl } from './utils';
@@ -47,7 +53,12 @@ export class AppStore extends EventTarget {
         const stored = await storageGet<Record<string, unknown>>(null);
         this.bookmarkChunks = storedChunkCount(stored);
         this.hasLegacyBookmarks = LEGACY_BOOKMARKS_KEY in stored;
-        const bookmarks = sanitizeBookmarks(decodeBookmarks(stored));
+        const decoded = decodeBookmarks(stored);
+        const sanitized = sanitizeBookmarks(decoded);
+        // 串号图标（同一张图被多个不同站点共用）和撞号主键（同一个 id 发给不同站点）
+        // 都在加载时修掉，不依赖用户记得去点修复按钮；写盘失败也不阻塞首屏。
+        const shared = sharedIconUrls(sanitized);
+        const bookmarks = stripSharedIcons(sanitized, shared).bookmarks;
         const folders = normalizeFolders(stored.folders, bookmarks);
         this.stateValue = {
             bookmarks,
@@ -58,6 +69,16 @@ export class AppStore extends EventTarget {
         };
         this.initialized = true;
         this.emit(ALL_CHANGES);
+        const repairedIds = hasDuplicateBookmarkIds(decoded);
+        if (shared.size || repairedIds) {
+            void this.persistRepairs(shared, repairedIds).catch(() => undefined);
+        }
+    }
+
+    /** 修好的数据写回同步存储，串行执行以免两次 commit 互相覆盖。 */
+    private async persistRepairs(shared: Set<string>, repairedIds: boolean): Promise<void> {
+        if (shared.size) await this.applySharedIconRepair(shared);
+        if (repairedIds) await this.commit(() => undefined, ['bookmarks']);
     }
 
     async updateSettings<S extends SettingsSection>(
@@ -70,6 +91,28 @@ export class AppStore extends EventTarget {
                 [section]: { ...draft.settings[section], ...patch }
             });
         }, ['settings'], [`settings.${section}`]);
+    }
+
+    /** 把站点从「常访问」里移除：只写屏蔽名单，不碰浏览器历史，可以随时恢复。 */
+    async removeRecentSite(host: string): Promise<boolean> {
+        const value = String(host ?? '').trim().toLowerCase();
+        if (!value) return false;
+        const current = this.stateValue.settings.layout.recentExcluded;
+        if (current.includes(value)) return false;
+        await this.commit((draft) => {
+            draft.settings.layout.recentExcluded = [...current, value];
+        }, ['settings'], ['settings.layout']);
+        return true;
+    }
+
+    /** 清掉整个屏蔽名单，返回恢复了几个站点。 */
+    async restoreRecentSites(): Promise<number> {
+        const count = this.stateValue.settings.layout.recentExcluded.length;
+        if (!count) return 0;
+        await this.commit((draft) => {
+            draft.settings.layout.recentExcluded = [];
+        }, ['settings'], ['settings.layout']);
+        return count;
     }
 
     async addFolder(value: string): Promise<boolean> {
@@ -145,6 +188,10 @@ export class AppStore extends EventTarget {
     /** 清掉被多个不同站点共用的远程图标（来源数据串号），返回清理条数。 */
     async clearSharedIcons(): Promise<number> {
         const shared = sharedIconUrls(this.stateValue.bookmarks);
+        return this.applySharedIconRepair(shared);
+    }
+
+    private async applySharedIconRepair(shared: Set<string>): Promise<number> {
         if (!shared.size) return 0;
         let cleared = 0;
         await this.commit((draft) => {
@@ -204,7 +251,7 @@ export class AppStore extends EventTarget {
 
     async replaceImportedData(data: Record<string, unknown>): Promise<void> {
         const next = initialState();
-        next.bookmarks = sanitizeBookmarks(Array.isArray(data.bookmarks) ? data.bookmarks : []);
+        next.bookmarks = stripSharedIcons(sanitizeBookmarks(Array.isArray(data.bookmarks) ? data.bookmarks : [])).bookmarks;
         next.folders = normalizeFolders(data.folders, next.bookmarks);
         next.settings = sanitizeSettings(data.settings);
         next.recentSearches = normalizeRecentSearches(data.recentSearches);

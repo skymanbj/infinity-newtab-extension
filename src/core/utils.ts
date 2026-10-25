@@ -88,7 +88,8 @@ export function bookmarkIconSrcSet(bookmark: Bookmark): string {
 }
 
 export function bookmarkIconCanUpgrade(bookmark: Bookmark): boolean {
-    return Boolean(bookmark.icon && !isManagedFavicon(bookmark.icon));
+    // 内嵌图标（本地图片、用户粘贴的 data:）是刻意选的，哪怕尺寸小也不能被 favicon 顶掉。
+    return Boolean(bookmark.icon && !isManagedFavicon(bookmark.icon) && !bookmark.icon.startsWith('data:'));
 }
 
 export function bookmarkIconIsRaster(bookmark: Bookmark): boolean {

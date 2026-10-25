@@ -1,9 +1,13 @@
+import { appStore } from './store';
 import type { RecentSite } from './types';
 
 type HostStats = RecentSite & { origins: Map<string, number>; rootTitle: string };
 
+/** How many frequent sites are kept at all; the Dock and the launchpad read from the same pool. */
+export const MAX_RECENT_SITES = 20;
+
 /** Groups history by site, keeps the hostname people actually visit and a readable site name. */
-export function rankSites(items: Array<Record<string, unknown>>): RecentSite[] {
+export function rankSites(items: Array<Record<string, unknown>>, excluded: ReadonlySet<string> = new Set()): RecentSite[] {
     const hosts = new Map<string, HostStats>();
     items.forEach((item) => {
         try {
@@ -14,6 +18,7 @@ export function rankSites(items: Array<Record<string, unknown>>): RecentSite[] {
             if (!bare || bare === 'newtab' || /(^|\.)google\.[a-z.]+$/.test(bare)) return;
             // The port is part of the site: localhost:18923 and localhost:3000 are different services.
             const host = url.port ? `${bare}:${url.port}` : bare;
+            if (excluded.has(host)) return;
             const visits = Math.max(1, Number(item.visitCount) || 1);
             const stats = hosts.get(host) ?? {
                 host,
@@ -36,7 +41,7 @@ export function rankSites(items: Array<Record<string, unknown>>): RecentSite[] {
     });
     return [...hosts.values()]
         .sort((left, right) => right.count - left.count || right.lastVisit - left.lastVisit)
-        .slice(0, 20)
+        .slice(0, MAX_RECENT_SITES)
         .map(({ origins, rootTitle, ...site }) => {
             const origin = [...origins.entries()].sort((left, right) => right[1] - left[1])[0][0];
             return { ...site, url: `${origin}/`, title: siteName(site.host, rootTitle) };
@@ -50,10 +55,15 @@ function siteName(host: string, rootTitle: string): string {
 }
 
 let recentSites: Promise<RecentSite[]> | null = null;
+/** The exclusion list is part of the result, so changing it must invalidate the cache. */
+let recentSitesKey = '';
 
 /** One history scan per page load, shared by the Dock, the launchpad and Spotlight. */
 export function loadRecentSites(refresh = false): Promise<RecentSite[]> {
-    if (!recentSites || refresh) {
+    const excluded = appStore.state.settings.layout.recentExcluded;
+    const key = excluded.join('\u0000');
+    if (!recentSites || refresh || key !== recentSitesKey) {
+        recentSitesKey = key;
         recentSites = new Promise<RecentSite[]>((resolve, reject) => {
             if (!chrome.history?.search) {
                 reject(new Error('浏览器未开放历史记录访问'));
@@ -61,7 +71,7 @@ export function loadRecentSites(refresh = false): Promise<RecentSite[]> {
             }
             chrome.history.search({ text: '', startTime: Date.now() - 30 * 24 * 60 * 60 * 1000, maxResults: 3000 }, (items: Array<Record<string, unknown>>) => {
                 if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-                else resolve(rankSites(items ?? []));
+                else resolve(rankSites(items ?? [], new Set(excluded)));
             });
         });
         recentSites.catch(() => { recentSites = null; });

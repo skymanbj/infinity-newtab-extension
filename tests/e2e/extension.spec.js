@@ -84,7 +84,89 @@ async function installChromeMock(page, seed = initialData, options = {}) {
         window.__readRawSync = () => readArea(syncKey);
         window.__readMockLocal = () => readArea(localKey);
         window.__readOpenedTabs = () => [...openedTabs];
-    }, { seed, history: historyItems, options });
+        window.__webdav = {
+            file: options.fetchMock?.file ? { text: options.fetchMock.file, name: 'infinity-newtab-backup.json' } : null,
+            requests: [],
+            permissionRequests: [],
+            channel: 'page'
+        };
+        if (options.fetchMock) {
+            // 页面直连和后台 worker 共用这一个 handler，好让两条通道的行为可对比。
+            const handleWebDav = async (url, init = {}) => {
+                const webdav = window.__webdav;
+                const method = init.method || 'GET';
+                const text = init.body instanceof Blob ? await init.body.text()
+                    : init.body instanceof Uint8Array ? new TextDecoder().decode(init.body)
+                        : init.body == null ? '' : String(init.body);
+                webdav.requests.push({
+                    url: String(url),
+                    method,
+                    via: webdav.channel,
+                    headers: init.headers instanceof Headers ? Object.fromEntries(init.headers.entries()) : { ...(init.headers || {}) },
+                    text
+                });
+                if (method === 'PUT') {
+                    webdav.file = { text, name: String(url).split('/').pop() };
+                    return new Response('created', { status: 201, statusText: 'Created' });
+                }
+                if (method === 'DELETE') {
+                    const existed = Boolean(webdav.file);
+                    webdav.file = null;
+                    // 204 的响应体必须为空，传 '' 会让 Response 构造直接抛错。
+                    return new Response(null, { status: existed ? 204 : 404 });
+                }
+                if (method === 'PROPFIND') {
+                    if (!webdav.file) return new Response('', { status: 404 });
+                    return new Response(
+                        `<d:multistatus xmlns:d="DAV:"><d:response><d:href>${String(url)}</d:href>` +
+                        `<d:propstat><d:prop><d:displayname>${String(url).split('/').pop()}</d:displayname>` +
+                        `<d:getcontentlength>${webdav.file.text.length}</d:getcontentlength>` +
+                        '<d:getlastmodified>Mon, 01 Jan 2024 00:00:00 GMT</d:getlastmodified></d:prop>' +
+                        '<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>',
+                        { status: 207, statusText: 'Multi-Status' }
+                    );
+                }
+                if (method === 'GET') {
+                    if (!webdav.file) return new Response('', { status: 404 });
+                    return new Response(webdav.file.text, { status: 200, headers: { 'Content-Type': 'application/json' } });
+                }
+                return new Response('', { status: 405 });
+            };
+            window.fetch = (url, init) => handleWebDav(url, init);
+            if (options.backgroundMock) {
+                // 初始没有权限，用户点「保存并测试」授权后才放行 —— 和真实流程一致。
+                let granted = false;
+                window.chrome.runtime.hasHostPermission = ({ origins = [] }) => granted && origins.length > 0;
+                window.chrome.permissions = {
+                    request: async ({ origins = [] }) => {
+                        // Chrome 的 match pattern 必须带路径，裸 origin 会抛 "Empty path"。
+                        for (const origin of origins) {
+                            if (origin === new URL(origin).origin) {
+                                throw new Error(`Invalid value for origin pattern ${origin}: Empty path.`);
+                            }
+                        }
+                        window.__webdav.permissionRequests.push([...origins]);
+                        granted = true;
+                        return true;
+                    }
+                };
+                window.chrome.runtime.sendMessage = async (message) => {
+                    if (!message || message.type !== 'infinity-newtab-webdav-request') return undefined;
+                    window.__webdav.channel = 'background';
+                    const response = await handleWebDav(message.url, {
+                        method: message.method,
+                        headers: message.headers,
+                        body: message.body ? Uint8Array.from(atob(message.body), (char) => char.charCodeAt(0)) : undefined
+                    });
+                    window.__webdav.channel = 'page';
+                    const bytes = new Uint8Array(await response.arrayBuffer());
+                    let binary = '';
+                    for (const byte of bytes) binary += String.fromCharCode(byte);
+                    return { ok: response.ok, status: response.status, body: bytes.length ? btoa(binary) : null };
+                };
+            }
+        }
+    }, { seed, history: options.history ?? historyItems, options });
 }
 
 async function openExtension(page, seed = initialData, options = {}) {
@@ -675,6 +757,126 @@ test('imports a version 1 backup and exports version 2', async ({ page }, testIn
     expect(errors).toEqual([]);
 });
 
+test('saves a WebDAV account and uploads a backup to it', async ({ page }) => {
+    const errors = await openExtension(page, initialData, { fetchMock: {} });
+    await openSettings(page, 'data');
+
+    // 没配置时远端动作不可用。
+    await expect(page.locator('.webdav-save')).toBeEnabled();
+    await expect(page.locator('.webdav-upload')).toBeDisabled();
+    await expect(page.locator('.webdav-restore')).toBeDisabled();
+    await expect(page.locator('.webdav-status')).toHaveText('未配置');
+
+    await page.locator('.webdav-url').fill('https://dav.example.com:8080/remote.php/dav/files/me');
+    await page.locator('.webdav-user').fill('backup-bot');
+    await page.locator('.webdav-pass').fill('s3cret');
+    await page.locator('.webdav-file').fill('backup.json');
+    await page.locator('.webdav-save').click();
+    // 没装后台 mock，所以网络权限申请不到 —— 保存成功但要提示跨域风险。
+    await expect(page.locator('.toast.is-info').last()).toContainText('远端还没有备份文件');
+    await expect(page.locator('.webdav-status')).toHaveText('https://dav.example.com:8080/remote.php/dav/files/me');
+    await expect(page.locator('.webdav-upload')).toBeEnabled();
+
+    // 账密只落在本机存储，不占同步空间。
+    expect(await page.evaluate(() => window.__readMockLocal().webdav)).toEqual({
+        url: 'https://dav.example.com:8080/remote.php/dav/files/me',
+        username: 'backup-bot',
+        password: 's3cret',
+        file: 'backup.json'
+    });
+    expect(await page.evaluate(() => window.__readMockSync().webdav)).toBeUndefined();
+
+    await page.locator('.webdav-upload').click();
+    await expect(page.locator('.toast.is-success').last()).toContainText('已上传');
+    const remote = await page.evaluate(() => window.__webdav);
+    expect(remote.requests.map((request) => request.method)).toEqual(['PROPFIND', 'PUT', 'PROPFIND']);
+    expect(remote.requests[1].url).toBe('https://dav.example.com:8080/remote.php/dav/files/me/backup.json');
+    expect(remote.requests[1].headers.Authorization).toBe(`Basic ${Buffer.from('backup-bot:s3cret').toString('base64')}`);
+    expect(remote.requests[1].headers['Content-Type']).toBe('application/json');
+    expect(remote.file.name).toBe('backup.json');
+    const uploaded = JSON.parse(remote.file.text);
+    expect(uploaded.version).toBe('2.0');
+    expect(uploaded.data.bookmarks).toHaveLength(3);
+    expect(errors).toEqual([]);
+});
+
+test('restores a WebDAV backup and deletes the remote copy', async ({ page }) => {
+    const remoteBackup = {
+        version: '2.0',
+        exportDate: '2026-01-24T14:12:46.859Z',
+        data: {
+            bookmarks: [{ id: 9, name: 'www.v2ex.com', url: 'https://www.v2ex.com/', icon: '', folder: '全部', order: 0 }],
+            folders: ['全部'],
+            settings: {
+                layout: { showClock: true, showSearch: true, showBookmarks: true, showStatus: true, showRecent: true, searchEngine: 'google', dockSource: 'bookmarks' },
+                wallpaper: { type: 'gradient', value: '', blur: 0, overlay: 30, idleHide: false },
+                appearance: { clockFormat: '24h', dateFormat: 'long', enhancedAnimations: true, theme: 'light' }
+            },
+            recentSearches: [],
+            lastBackupPrompt: 4102444800000
+        },
+        localMedia: { image: null, video: null }
+    };
+    const errors = await openExtension(page, initialData, { fetchMock: { file: JSON.stringify(remoteBackup) } });
+    await openSettings(page, 'data');
+
+    await page.locator('.webdav-url').fill('https://dav.example.com/dav');
+    await page.locator('.webdav-user').fill('bot');
+    await page.locator('.webdav-pass').fill('pw');
+    await page.locator('.webdav-save').click();
+    await expect(page.locator('.toast.is-info').last()).toContainText('远端已有');
+    // 未授权时要在卡片上说明上传会遇到跨域问题。
+    await expect(page.locator('.webdav-note')).toContainText('后台通道未启用');
+
+    await expect(page.locator('.dock-item[data-bookmark-id]')).toHaveCount(2);
+    await page.locator('.webdav-restore').click();
+    await expect(page.getByRole('alertdialog')).toContainText('从 WebDAV 恢复');
+    await page.getByRole('alertdialog').getByRole('button', { name: '恢复' }).click();
+    await expect(page.locator('.toast.is-success').last()).toContainText('已从 WebDAV 恢复');
+    await expect(page.locator('.dock-item[data-bookmark-id]')).toHaveCount(1);
+    await expect(page.locator('.dock-item[data-bookmark-id]')).toHaveAttribute('aria-label', 'v2ex.com');
+    expect(await page.evaluate(() => window.__webdav.requests.filter((request) => request.method === 'GET'))).toHaveLength(1);
+
+    await page.locator('.webdav-delete').click();
+    await expect(page.getByRole('alertdialog')).toContainText('删除远端备份');
+    await page.getByRole('alertdialog').getByRole('button', { name: '删除' }).click();
+    await expect(page.locator('.toast.is-success').last()).toContainText('已删除远端备份');
+    expect(await page.evaluate(() => window.__webdav.file)).toBeNull();
+    // 删除远端不影响本机。
+    await expect(page.locator('.dock-item[data-bookmark-id]')).toHaveCount(1);
+    expect(errors).toEqual([]);
+});
+
+test('uploads through the background worker once the host permission is granted', async ({ page }) => {
+    const errors = await openExtension(page, initialData, { fetchMock: {}, backgroundMock: {} });
+    await openSettings(page, 'data');
+
+    await page.locator('.webdav-url').fill('https://infini-cloud.example.com/dav/');
+    await page.locator('.webdav-user').fill('bot');
+    await page.locator('.webdav-pass').fill('pw');
+    await page.locator('.webdav-save').click();
+    // 授权成功后要提示请求已经改走后台通道。
+    await expect(page.locator('.toast.is-success').last()).toContainText('不受跨域限制');
+    await expect(page.locator('.webdav-note')).toContainText('请求走后台通道');
+
+    await page.locator('.webdav-upload').click();
+    await expect(page.locator('.toast.is-success').last()).toContainText('已上传');
+
+    const webdav = await page.evaluate(() => window.__webdav);
+    // chrome.permissions 要的是 match pattern，必须带 /* 路径。
+    expect(webdav.permissionRequests).toEqual([['https://infini-cloud.example.com/*']]);
+    expect(webdav.requests.map((request) => request.method)).toEqual(['PROPFIND', 'PUT', 'PROPFIND']);
+    // 授权后没有任何一次请求再走页面直连 —— 页面根本过不了跨域检查。
+    expect(webdav.requests.every((request) => request.via === 'background')).toBe(true);
+    expect(webdav.requests[1].headers.Authorization).toBe(`Basic ${Buffer.from('bot:pw').toString('base64')}`);
+    expect(webdav.requests[1].headers['Content-Type']).toBe('application/json');
+    expect(webdav.file.name).toBe('infinity-newtab-backup.json');
+    const uploaded = JSON.parse(webdav.file.text);
+    expect(uploaded.version).toBe('2.0');
+    expect(uploaded.data.bookmarks).toHaveLength(3);
+    expect(errors).toEqual([]);
+});
+
 test('keeps the backup reminder clear of the Dock and lets it be dismissed', async ({ page }) => {
     const errors = await openExtension(page, { ...initialData, lastBackupPrompt: 0 });
     for (const width of [1440, 900]) {
@@ -827,6 +1029,24 @@ test('shows frequent sites in the Dock by default', async ({ page }) => {
     expect(errors).toEqual([]);
 });
 
+test('caps the Dock and the launchpad at 20 frequent sites', async ({ page }) => {
+    const seed = structuredClone(initialData);
+    delete seed.settings.layout.dockSource;
+    // 26 个站点，足够越过上限，才能验证确实被截断。
+    const history = Array.from({ length: 26 }, (_, index) => ({
+        url: `https://site-${index}.example.com/`,
+        visitCount: 26 - index,
+        lastVisitTime: 300 - index
+    }));
+    const errors = await openExtension(page, seed, { history });
+    await expect(page.locator('.dock-item[data-site-index]')).toHaveCount(20);
+    await expect(page.locator('.dock-slot')).toHaveCount(0);
+
+    await openLaunchpad(page, 'recent');
+    await expect(page.locator('.recent-tile')).toHaveCount(20);
+    expect(errors).toEqual([]);
+});
+
 test('keeps history out of every view when frequent sites are turned off', async ({ page }) => {
     const seed = structuredClone(initialData);
     seed.settings.layout = { ...seed.settings.layout, showRecent: false, dockSource: 'recent' };
@@ -850,6 +1070,43 @@ test('keeps history out of every view when frequent sites are turned off', async
     expect(errors).toEqual([]);
 });
 
+test('removes a frequent site from 常访问 and restores it in settings', async ({ page }) => {
+    const errors = await openExtension(page);
+    await openLaunchpad(page, 'recent');
+    await expect(page.locator('.recent-tile')).toHaveCount(2);
+    const historyBefore = await page.evaluate(() => new Promise((resolve) => chrome.history.search({}, resolve)));
+
+    await page.locator('.recent-tile').first().click({ button: 'right' });
+    await expect(page.locator('.context-menu button', { hasText: '从常访问移除' })).toBeVisible();
+    await page.locator('.context-menu button', { hasText: '从常访问移除' }).click();
+
+    // 整站消失，浏览器历史原样保留。
+    await expect(page.locator('.recent-tile')).toHaveCount(1);
+    await expect(page.locator('.launchpad-grid')).not.toContainText('youtube.com');
+    expect((await page.evaluate(() => window.__readMockSync())).settings.layout.recentExcluded).toEqual(['youtube.com']);
+    expect(await page.evaluate(() => new Promise((resolve) => chrome.history.search({}, resolve)))).toEqual(historyBefore);
+
+    // 把剩下的站点也移除，回到空状态提示。
+    await page.locator('.recent-tile').first().click({ button: 'right' });
+    await page.locator('.context-menu button', { hasText: '从常访问移除' }).click();
+    await expect(page.locator('.recent-tile')).toHaveCount(0);
+    await expect(page.locator('.launchpad-message')).toHaveText('最近 30 天还没有可展示的网站');
+    expect((await page.evaluate(() => window.__readMockSync())).settings.layout.recentExcluded).toEqual(['youtube.com', 'v2ex.com']);
+
+    await page.locator('.launchpad-done').click();
+    await openSettings(page, 'widgets');
+    await expect(page.locator('.restore-recent')).toBeEnabled();
+    await page.locator('.restore-recent').click();
+    await expect(page.locator('.restore-recent')).toBeDisabled();
+    await expect(page.locator('.settings-pane[data-pane="widgets"]').locator('.row-sub', { hasText: '共 0 个' })).toBeVisible();
+    expect((await page.evaluate(() => window.__readMockSync())).settings.layout.recentExcluded).toEqual([]);
+    await page.keyboard.press('Escape');
+    await openLaunchpad(page, 'recent');
+    await expect(page.locator('.recent-tile')).toHaveCount(2);
+    await expect(page.locator('.launchpad-grid')).toContainText('youtube.com');
+    expect(errors).toEqual([]);
+});
+
 test('edits a bookmark in place instead of duplicating it', async ({ page }) => {
     const errors = await openExtension(page);
     await openLaunchpad(page);
@@ -870,6 +1127,64 @@ test('edits a bookmark in place instead of duplicating it', async ({ page }) => 
     expect(errors).toEqual([]);
 });
 
+test('compresses a local image into an inline icon that fits sync storage', async ({ page }) => {
+    const errors = await openExtension(page);
+    await openLaunchpad(page);
+    await page.locator('.launchpad .bookmark-tile[data-bookmark-id]').first().click({ button: 'right' });
+    await page.getByText('编辑…', { exact: true }).click();
+    const dialog = page.locator('.bookmark-dialog');
+    await expect(dialog).toBeVisible();
+
+    // 512×512 的渐变加噪点，体积接近真实 logo，压缩逻辑必须真的动手。
+    const bytes = await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 512;
+        canvas.height = 512;
+        const context = canvas.getContext('2d');
+        const gradient = context.createLinearGradient(0, 0, 512, 512);
+        gradient.addColorStop(0, '#ff5f57');
+        gradient.addColorStop(0.5, '#b9a2ff');
+        gradient.addColorStop(1, '#0a84ff');
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, 512, 512);
+        for (let index = 0; index < 900; index += 1) {
+            context.fillStyle = `hsla(${index % 360}, 90%, 60%, 0.6)`;
+            context.beginPath();
+            context.arc((index * 37) % 512, (index * 71) % 512, 6, 0, Math.PI * 2);
+            context.fill();
+        }
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+        return Array.from(new Uint8Array(await blob.arrayBuffer()));
+    });
+
+    await dialog.locator('.icon-upload input[type="file"]').setInputFiles({
+        name: 'logo.png',
+        mimeType: 'image/png',
+        buffer: Buffer.from(bytes)
+    });
+    await expect(dialog.locator('.icon-status')).toContainText('已使用本地图片');
+    await expect(dialog.locator('input[name="icon"]')).toHaveValue('');
+    expect(await dialog.locator('.url-preview').getAttribute('src')).toMatch(/^data:image\/webp;base64,/);
+
+    await dialog.getByRole('button', { name: '保存' }).click();
+    await expect(dialog).toHaveCount(0);
+
+    const saved = await page.evaluate(() => window.__readMockSync().bookmarks);
+    const icon = saved.find((bookmark) => bookmark.name === 'www.google.com').icon;
+    expect(icon).toMatch(/^data:image\/webp;base64,/);
+    // 内嵌图标必须落在 chrome.storage.sync 的单条预算内，否则刷新后会悄悄消失。
+    expect(icon.length).toBeLessThanOrEqual(4096);
+
+    // 再次编辑时，内嵌图标应还原成「本地图片」状态，而不是塞进网址输入框。
+    await page.locator('.launchpad .bookmark-tile[data-bookmark-id]').first().click({ button: 'right' });
+    await page.getByText('编辑…', { exact: true }).click();
+    await expect(dialog.locator('.icon-status')).toContainText('已使用本地图片');
+    await expect(dialog.locator('input[name="icon"]')).toHaveValue('');
+    await dialog.locator('.cancel-dialog').click();
+    await expect(dialog).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
+
 test('clears icons that unrelated sites share by mistake', async ({ page }) => {
     const shared = 'https://infinityicon.infinitynewtab.com/user-share-icon/cee009549b352def723ba09d6da4b742.png';
     const seed = structuredClone(initialData);
@@ -880,17 +1195,19 @@ test('clears icons that unrelated sites share by mistake', async ({ page }) => {
     seed.bookmarks.push({ id: 4, name: 'Bilibili 番剧', url: 'https://www.bilibili.com/anime/', icon: 'https://www.bilibili.com/favicon.ico', folder: 'POM', order: 1 });
 
     const errors = await openExtension(page, seed);
+
+    // 串号图标在加载时就已经修掉，不依赖用户记得点按钮。
+    const afterLoad = await page.evaluate(() => window.__readMockSync().bookmarks);
+    expect(afterLoad.find((bookmark) => bookmark.name === 'www.google.com').icon).toBe('');
+    expect(afterLoad.find((bookmark) => bookmark.name === 'GitHub').icon).toBe('');
+    expect(afterLoad.find((bookmark) => bookmark.name === 'Bilibili').icon).toBe('https://www.bilibili.com/favicon.ico');
+    expect(afterLoad.find((bookmark) => bookmark.name === 'Bilibili 番剧').icon).toBe('https://www.bilibili.com/favicon.ico');
+
     await openSettings(page, 'data');
     await page.locator('.fix-icons').click();
-    await expect(page.locator('.toast')).toContainText('已修复 2 个图标');
+    await expect(page.locator('.toast')).toContainText('没有发现被多个站点共用的图标');
 
-    const saved = await page.evaluate(() => window.__readMockSync().bookmarks);
-    expect(saved.find((bookmark) => bookmark.name === 'www.google.com').icon).toBe('');
-    expect(saved.find((bookmark) => bookmark.name === 'GitHub').icon).toBe('');
-    expect(saved.find((bookmark) => bookmark.name === 'Bilibili').icon).toBe('https://www.bilibili.com/favicon.ico');
-    expect(saved.find((bookmark) => bookmark.name === 'Bilibili 番剧').icon).toBe('https://www.bilibili.com/favicon.ico');
-
-    // 画面上也必须立刻换掉，不能只在存储里清空。
+    // 画面上也不能再出现串号地址。
     await page.keyboard.press('Escape');
     await openLaunchpad(page);
     const rendered = await page.locator('.launchpad .bookmark-tile img').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('src') || ''));
@@ -920,8 +1237,13 @@ test('reorders folder tabs from the tab menu', async ({ page }) => {
     await tabs.nth(1).click({ button: 'right' });
     await expect(page.locator('.context-menu button', { hasText: '左移' })).toBeDisabled();
     await page.keyboard.press('Escape');
+    // 「全部」是最外层文件夹，不可删除也不可排序；菜单只给「打开」，而不是右键后一片空白。
     await tabs.nth(0).click({ button: 'right' });
-    await expect(page.locator('.context-menu')).toHaveCount(0);
+    await expect(page.locator('.context-menu button', { hasText: '打开' })).toHaveCount(1);
+    await expect(page.locator('.context-menu button', { hasText: '删除文件夹' })).toHaveCount(0);
+    await expect(page.locator('.context-menu button', { hasText: '重命名…' })).toHaveCount(0);
+    await expect(page.locator('.context-menu button', { hasText: '左移' })).toHaveCount(0);
+    await expect(page.locator('.context-menu button', { hasText: '右移' })).toHaveCount(0);
     expect(errors).toEqual([]);
 });
 
@@ -980,5 +1302,82 @@ test('reorders folder tabs by dragging one onto another', async ({ page }) => {
     await expect(tabs.nth(1)).toHaveText('POM');
     await expect(tabs.nth(3)).toHaveText('阅读');
     expect((await page.evaluate(() => window.__readMockSync())).folders).toEqual(['全部', 'POM', '工作', '阅读']);
+    expect(errors).toEqual([]);
+});
+
+test('scrolls the folder tab strip with a plain mouse wheel', async ({ page }) => {
+    const seed = structuredClone(initialData);
+    // 文件夹多到把标签条撑出可视宽度，两侧的标签才有「滑过去」的需求。
+    seed.folders = ['全部', ...Array.from({ length: 24 }, (_, index) => `资料${index + 1}`)];
+
+    const errors = await openExtension(page, seed);
+    await openLaunchpad(page);
+    const strip = page.locator('.launchpad-tabs');
+    const track = page.locator('.launchpad-tab-track');
+    await expect(track.locator('.launchpad-tab[data-folder]').first()).toBeVisible();
+    // 「全部」+ 24 个文件夹，外加书签里自带的 POM，足够撑出横向溢出。
+    expect(await track.locator('.launchpad-tab[data-folder]').count()).toBeGreaterThanOrEqual(25);
+
+    expect(await track.evaluate((node) => node.scrollWidth - node.clientWidth)).toBeGreaterThan(0);
+    // 停在最左边时只有右侧还有内容，渐隐提示也应该只在右侧。
+    await expect(track).toHaveClass(/has-more-right/);
+    await expect(track).not.toHaveClass(/has-more-left/);
+
+    const box = await strip.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, 200);
+    await expect.poll(() => track.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
+    await expect(track).toHaveClass(/has-more-left/);
+
+    // 竖直滚轮往回转同样有效，一直滚回最左边。
+    await page.mouse.wheel(0, -2000);
+    await expect.poll(() => track.evaluate((node) => node.scrollLeft)).toBe(0);
+
+    // 触控板的横向手势（deltaX）也走同一条路径。
+    await page.mouse.wheel(180, 0);
+    await expect.poll(() => track.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
+
+    // 滑到最右再点最后一个标签：重建标签后选中的那个必须自动滑回可视范围。
+    await page.mouse.wheel(0, 4000);
+    const last = track.locator('.launchpad-tab[data-folder]').last();
+    await last.click();
+    await expect(last).toHaveClass(/is-active/);
+    expect(await last.evaluate((node) => {
+        const tab = node.getBoundingClientRect();
+        const view = node.parentElement.getBoundingClientRect();
+        return tab.left >= view.left - 1 && tab.right <= view.right + 1;
+    })).toBe(true);
+    expect(errors).toEqual([]);
+});
+
+test('scrolls the launchpad grid from the empty side margins', async ({ page }) => {
+    const seed = structuredClone(initialData);
+    // 三屏书签，栅格才会真的溢出。
+    for (let index = 0; index < 60; index += 1) {
+        seed.bookmarks.push({ id: 100 + index, name: `站点 ${index}`, url: `https://site-${index}.example.com/`, icon: '', folder: '全部', order: 10 + index });
+    }
+
+    const errors = await openExtension(page, seed);
+    await openLaunchpad(page);
+    const grid = page.locator('.launchpad-grid');
+    expect(await grid.evaluate((node) => node.scrollHeight - node.clientHeight)).toBeGreaterThan(0);
+
+    // 栅格被限制在 1000px 居中，两侧留白不在滚动容器里，滚轮也得能滚。
+    const box = await grid.boundingBox();
+    const margin = box.x / 2;
+    expect(margin).toBeGreaterThan(20);
+    await page.mouse.move(margin, box.y + 120);
+    await page.mouse.wheel(0, 320);
+    await expect.poll(() => grid.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+
+    // 反方向同样管用，一直滚回顶部。
+    await page.mouse.wheel(0, -4000);
+    await expect.poll(() => grid.evaluate((node) => node.scrollTop)).toBe(0);
+
+    // 栅格内部交给浏览器自己滚，不能被接管后算成两倍距离。
+    const tile = await page.locator('.launchpad .bookmark-tile').first().boundingBox();
+    await page.mouse.move(tile.x + tile.width / 2, tile.y + tile.height / 2);
+    await page.mouse.wheel(0, 300);
+    await expect.poll(() => grid.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
     expect(errors).toEqual([]);
 });

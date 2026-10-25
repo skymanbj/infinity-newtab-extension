@@ -36,8 +36,7 @@ export function sharedIconUrls(bookmarks: Bookmark[]): Set<string> {
 }
 
 /** 清掉共用图标，交回按域名取 favicon。返回清理后的书签与被清掉的数量。 */
-export function stripSharedIcons(bookmarks: Bookmark[]): { bookmarks: Bookmark[]; cleared: number } {
-    const shared = sharedIconUrls(bookmarks);
+export function stripSharedIcons(bookmarks: Bookmark[], shared: Set<string> = sharedIconUrls(bookmarks)): { bookmarks: Bookmark[]; cleared: number } {
     if (!shared.size) return { bookmarks, cleared: 0 };
     let cleared = 0;
     const next = bookmarks.map((bookmark) => {

@@ -2,7 +2,7 @@ import { appStore } from '../core/store';
 import type { Bookmark, RecentSite } from '../core/types';
 import { cleanDisplayName } from '../core/utils';
 import { ICONS } from './icons';
-import { confirmAction, notifyError, openMenu, promptText } from './ui-layer';
+import { confirmAction, notify, notifyError, openMenu, promptText } from './ui-layer';
 
 export const ROOT_FOLDER = '全部';
 
@@ -57,8 +57,21 @@ export function bookmarkMenu(source: HTMLElement, bookmark: Bookmark, at: MenuAn
 export function siteMenu(source: HTMLElement, site: RecentSite, at: MenuAnchor): void {
     openMenu([
         { label: '在新标签页打开', icon: ICONS.open, action: () => openInNewTab(site.url) },
-        { label: '添加到书签', icon: ICONS.plus, action: () => openBookmarkDialog(source, { draft: { url: site.url, name: site.title } }) }
+        { label: '添加到书签', icon: ICONS.plus, action: () => openBookmarkDialog(source, { draft: { url: site.url, name: site.title } }) },
+        { separator: true },
+        { label: '从常访问移除', icon: ICONS.trash, danger: true, action: () => void removeRecentSite(site) }
     ], at);
+}
+
+/** 只把 host 写进屏蔽名单，浏览器历史原样保留；设置里可以一键恢复全部。 */
+export async function removeRecentSite(site: RecentSite): Promise<void> {
+    try {
+        if (await appStore.removeRecentSite(site.host)) {
+            notify(`已从常访问移除“${site.title || site.host}”`, 'info');
+        }
+    } catch (error) {
+        notifyError(error);
+    }
 }
 
 export async function moveBookmark(id: Bookmark['id'], folder: string, targetId?: Bookmark['id']): Promise<void> {

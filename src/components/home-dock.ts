@@ -1,4 +1,4 @@
-import { loadRecentSites } from '../core/history';
+import { MAX_RECENT_SITES, loadRecentSites } from '../core/history';
 import { appStore } from '../core/store';
 import type { RecentSite } from '../core/types';
 import { escapeHtml } from '../core/utils';
@@ -16,18 +16,28 @@ import {
 import { ICONS } from './icons';
 import { bindSiteIcons, siteIcon } from './site-icon';
 
-const MAX_ITEMS = 12;
+/** The Dock wraps rather than scrolls, so pinned bookmarks keep their own, smaller row budget. */
+const MAX_BOOKMARK_ITEMS = 12;
 
 /** Bottom Dock: the most visited sites by default, or the bookmarks kept in “全部”, then launchpad shortcuts. */
 export class HomeDock extends StoreElement {
     protected readonly observedChanges = ['bookmarks', 'settings.layout'] as const;
     private sites: RecentSite[] | null = null;
     private loadingSites = false;
+    private recentKey = '';
 
     protected render(): void {
-        const { showBookmarks, showRecent, dockSize, dockMagnify, openInNewTab } = appStore.state.settings.layout;
+        const layout = appStore.state.settings.layout;
+        const { showBookmarks, showRecent, dockSize, dockMagnify, openInNewTab } = layout;
+        // The exclusion list is part of the result, so a stale cached list would still show the removed site.
+        const recentKey = layout.recentExcluded.join('\u0000');
+        if (recentKey !== this.recentKey) {
+            this.recentKey = recentKey;
+            this.sites = null;
+            this.loadingSites = false;
+        }
         // Nothing history-based appears once frequent sites are turned off.
-        const dockSource = showRecent ? appStore.state.settings.layout.dockSource : 'bookmarks';
+        const dockSource = showRecent ? layout.dockSource : 'bookmarks';
         this.hidden = !showBookmarks;
         if (this.hidden) {
             this.innerHTML = '';
@@ -37,13 +47,14 @@ export class HomeDock extends StoreElement {
         this.classList.toggle('is-magnifying', dockMagnify);
         const target = openInNewTab ? 'target="_blank"' : '';
         let items = '';
+        const maxItems = dockSource === 'recent' ? MAX_RECENT_SITES : MAX_BOOKMARK_ITEMS;
         if (dockSource === 'recent') {
             if (!this.sites && !this.loadingSites) void this.loadSites();
             if (!this.sites) {
                 // History is still scanning: hold the slots so the Dock does not jump when icons arrive.
-                items = Array.from({ length: MAX_ITEMS }, () => '<span class="dock-slot" aria-hidden="true"></span>').join('');
+                items = Array.from({ length: maxItems }, () => '<span class="dock-slot" aria-hidden="true"></span>').join('');
             } else {
-                const sites = this.sites.slice(0, MAX_ITEMS);
+                const sites = this.sites.slice(0, maxItems);
                 items = sites.map((site, index) => `
                 <a class="dock-item" href="${escapeHtml(site.url)}" ${target} rel="noopener noreferrer" data-site-index="${index}" data-liquid-item aria-label="${escapeHtml(site.title)}" draggable="false">
                     ${siteIcon({ url: site.url, name: site.title })}
@@ -73,7 +84,7 @@ export class HomeDock extends StoreElement {
     }
 
     private bookmarkItems(target: string): string {
-        const bookmarks = bookmarksIn(ROOT_FOLDER).slice(0, MAX_ITEMS);
+        const bookmarks = bookmarksIn(ROOT_FOLDER).slice(0, MAX_BOOKMARK_ITEMS);
         if (!bookmarks.length) return `
                 <button class="dock-item dock-add" type="button" data-liquid-item aria-label="添加书签">
                     <span class="app-icon app-icon-glass">${ICONS.plus}</span>

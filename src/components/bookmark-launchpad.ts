@@ -35,6 +35,7 @@ export class BookmarkLaunchpad extends StoreElement {
     private draggingId: Bookmark['id'] | null = null;
     private draggingFolder: string | null = null;
     private recent: { sites: RecentSite[]; state: 'idle' | 'loading' | 'ready' | 'error'; error: string } = { sites: [], state: 'idle', error: '' };
+    private recentKey = '';
     private releaseLayer: (() => void) | null = null;
 
     connectedCallback(): void {
@@ -81,14 +82,22 @@ export class BookmarkLaunchpad extends StoreElement {
         if (!this.isOpen) return;
         if (!appStore.state.folders.includes(this.folder)) this.folder = ROOT_FOLDER;
         if (!appStore.state.settings.layout.showRecent) this.view = 'bookmarks';
+        // 屏蔽名单变了，缓存的常访问列表就是旧的，退回 idle 让下面重新拉取。
+        const recentKey = appStore.state.settings.layout.recentExcluded.join('\u0000');
+        if (recentKey !== this.recentKey) {
+            this.recentKey = recentKey;
+            this.recent = { sites: [], state: 'idle', error: '' };
+        }
         if (this.view === 'recent' && this.recent.state === 'idle') void this.loadRecent();
         if (!this.querySelector('.launchpad')) this.renderShell();
         const grid = this.querySelector<HTMLElement>('.launchpad-grid')!;
         const scroll = grid.scrollTop;
-        this.querySelector('.launchpad-tabs')!.innerHTML = this.tabsTemplate();
+        this.querySelector('.launchpad-tab-track')!.innerHTML = this.tabsTemplate();
         grid.dataset.view = this.query ? 'search' : this.view;
         grid.innerHTML = this.gridTemplate();
         grid.scrollTop = scroll;
+        // 每次重建标签都会回到最左，选中的标签可能在屏幕外，重新滑回来。
+        this.revealActiveTab();
         bindSiteIcons(this);
         this.querySelectorAll<HTMLAnchorElement>('.bookmark-tile').forEach((card) => this.bindBookmark(card));
         this.querySelectorAll<HTMLElement>('[data-drop-folder]').forEach((target) => this.bindFolderDrop(target));
@@ -105,7 +114,9 @@ export class BookmarkLaunchpad extends StoreElement {
                         ${ICONS.search}
                         <input type="search" placeholder="在书签中搜索" aria-label="在书签中搜索" autocomplete="off" spellcheck="false">
                     </label>
-                    <div class="glass launchpad-tabs" role="tablist" aria-label="书签分组"></div>
+                    <div class="glass launchpad-tabs" role="tablist" aria-label="书签分组">
+                        <div class="launchpad-tab-track"></div>
+                    </div>
                 </header>
                 <button class="glass launchpad-done" type="button" data-liquid-item>完成</button>
                 <div class="launchpad-grid"></div>
@@ -205,6 +216,22 @@ export class BookmarkLaunchpad extends StoreElement {
         });
 
         const tabs = this.querySelector<HTMLElement>('.launchpad-tabs')!;
+        const track = this.querySelector<HTMLElement>('.launchpad-tab-track')!;
+        track.addEventListener('scroll', () => this.syncTabOverflow(), { passive: true });
+        /**
+         * 标签条是横向滚动、而且隐藏了滚动条，普通鼠标滚轮默认只做纵向滚动，
+         * 文件夹一多两侧的标签就完全够不着。这里把纵向滚轮也转成横向滑动，
+         * 触控板本来就有的横向手势照旧生效，两个方向都能滑。
+         */
+        tabs.addEventListener('wheel', (event) => {
+            if (event.ctrlKey || event.shiftKey) return;
+            const raw = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+            const step = wheelPixels(event, track.clientWidth, raw);
+            if (!step) return;
+            const before = track.scrollLeft;
+            track.scrollLeft = before + step;
+            if (track.scrollLeft !== before) event.preventDefault();
+        }, { passive: false });
         tabs.addEventListener('click', (event) => {
             const button = (event.target as HTMLElement).closest<HTMLButtonElement>('.launchpad-tab');
             if (!button) return;
@@ -246,6 +273,20 @@ export class BookmarkLaunchpad extends StoreElement {
             const id = this.dragId(event);
             if (id !== null) void moveBookmark(id, this.folder);
         });
+        /**
+         * 栅格被限制在 1000px 居中，两侧留白和顶部区域都不在滚动容器里，
+         * 指针停在那儿滚轮就没有目标可滚。整个启动台接管一次，
+         * 只要不是栅格内部（浏览器自己会滚）就手动把位移转给栅格。
+         */
+        this.querySelector<HTMLElement>('.launchpad')?.addEventListener('wheel', (event) => {
+            if (event.defaultPrevented || event.ctrlKey) return;
+            if (event.target instanceof Node && grid.contains(event.target)) return;
+            const step = wheelPixels(event, grid.clientHeight, event.deltaY);
+            if (!step) return;
+            const before = grid.scrollTop;
+            grid.scrollTop = before + step;
+            if (grid.scrollTop !== before) event.preventDefault();
+        }, { passive: false });
         this.querySelector('.launchpad')?.addEventListener('contextmenu', (event) => {
             const mouse = event as MouseEvent;
             const target = mouse.target as HTMLElement;
@@ -362,10 +403,38 @@ export class BookmarkLaunchpad extends StoreElement {
             .forEach((item) => item.classList.remove('drop-before', 'drop-after'));
     }
 
+    /** 标签超出宽度时在两侧留渐隐，提示这一头还能继续滑；滑到头就收掉对应一侧。 */
+    private syncTabOverflow(): void {
+        const track = this.querySelector<HTMLElement>('.launchpad-tab-track');
+        if (!track) return;
+        const max = track.scrollWidth - track.clientWidth;
+        track.classList.toggle('has-more-left', track.scrollLeft > 1);
+        track.classList.toggle('has-more-right', track.scrollLeft < max - 1);
+    }
+
+    /** 选中的标签可能在可视范围之外（文件夹多的时候），渲染后把它滑回可见区域。 */
+    private revealActiveTab(): void {
+        const track = this.querySelector<HTMLElement>('.launchpad-tab-track');
+        const active = track?.querySelector<HTMLElement>('.launchpad-tab.is-active');
+        if (!track || !active) return;
+        const box = track.getBoundingClientRect();
+        const tab = active.getBoundingClientRect();
+        if (tab.left < box.left) track.scrollLeft -= box.left - tab.left + 8;
+        else if (tab.right > box.right) track.scrollLeft += tab.right - box.right + 8;
+        this.syncTabOverflow();
+    }
+
     private openTileMenu(tile: HTMLElement, at: { x: number; y: number } | HTMLElement): void {
         const folder = tile.dataset.folder;
         if (folder !== undefined) {
-            if (folder === ROOT_FOLDER) return;
+            // 「全部」是最外层文件夹，删掉就没地方放书签了；给一个菜单而不是死掉，
+            // 否则右键被 preventDefault 之后什么都不会出现，看起来像坏了。
+            if (folder === ROOT_FOLDER) {
+                openMenu([
+                    { label: '打开', icon: ICONS.open, action: () => this.show('bookmarks', ROOT_FOLDER) }
+                ], at);
+                return;
+            }
             const order = folderTabOrder();
             const index = order.indexOf(folder);
             openMenu([
@@ -412,4 +481,10 @@ export class BookmarkLaunchpad extends StoreElement {
     private dragId(event: DragEvent): Bookmark['id'] | null {
         return event.dataTransfer?.getData('text/plain') || this.draggingId;
     }
+}
+
+/** 滚轮位移换算成像素：Chrome 给像素，Firefox 会按行或按页给。 */
+function wheelPixels(event: WheelEvent, page: number, raw: number): number {
+    const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? page : 1;
+    return raw * scale;
 }

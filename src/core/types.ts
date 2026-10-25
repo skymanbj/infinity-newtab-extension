@@ -21,6 +21,8 @@ export interface LayoutSettings {
     dockMagnify: boolean;
     saveSearches: boolean;
     backupReminder: boolean;
+    /** Hosts removed from “常访问” through the context menu; browser history is left untouched. */
+    recentExcluded: string[];
 }
 
 export interface WallpaperSettings {
