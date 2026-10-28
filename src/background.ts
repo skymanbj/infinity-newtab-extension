@@ -1,26 +1,32 @@
 import { base64ToBytes, bytesToBase64 } from './core/base64';
 import { isWebDavRequestMessage, type WebDavRequestMessage, type WebDavResponseMessage } from './core/webdav-bridge';
+import { isBingWallpaperRequestMessage, type BingWallpaperResponseMessage } from './core/wallpaper-bridge';
 
 const MAX_TIMEOUT = 600_000;
+const BING_ARCHIVE_URL = 'https://cn.bing.com/HPImageArchive.aspx';
+const BING_BASE_URL = 'https://cn.bing.com';
 
 /**
- * Executes WebDAV requests on behalf of the new tab page.
+ * Executes WebDAV requests and Bing wallpaper fetching on behalf of the new tab page.
  *
- * The page itself cannot make these requests: it has no host permission, so a WebDAV
- * server that does not advertise CORS headers gets blocked by the browser before the
- * request is sent. The service worker does hold the granted host permission, so the
- * request goes through untouched.
- *
- * Kept free of application state on purpose — the service worker can be killed at any
- * time, and this is the only thing it needs to do.
+ * In Manifest V3, extension pages (newtab.html) cannot bypass CORS for cross-origin APIs.
+ * The background service worker holds the granted host permissions, allowing requests
+ * to go through directly without CORS restrictions.
  */
 chrome.runtime.onMessage.addListener((message: unknown, _sender: unknown, sendResponse: (value: unknown) => void): boolean => {
-    if (!isWebDavRequestMessage(message)) return false;
-    void perform(message)
-        .then(sendResponse)
-        .catch((error) => sendResponse({ error: describeTransportError(error) }));
-    // Keep the message channel open until the async response is sent.
-    return true;
+    if (isWebDavRequestMessage(message)) {
+        void perform(message)
+            .then(sendResponse)
+            .catch((error) => sendResponse({ error: describeTransportError(error) }));
+        return true;
+    }
+    if (isBingWallpaperRequestMessage(message)) {
+        void fetchBingWallpaper()
+            .then(sendResponse)
+            .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : '获取必应壁纸失败' }));
+        return true;
+    }
+    return false;
 });
 
 async function perform(message: WebDavRequestMessage): Promise<WebDavResponseMessage> {
@@ -37,6 +43,57 @@ async function perform(message: WebDavRequestMessage): Promise<WebDavResponseMes
     } catch (error) {
         return { error: describeTransportError(error) };
     }
+}
+
+async function fetchBingWallpaper(): Promise<BingWallpaperResponseMessage> {
+    const randomIdx = Math.floor(Math.random() * 8);
+    let response: Response;
+    try {
+        response = await fetch(`${BING_ARCHIVE_URL}?format=js&idx=${randomIdx}&n=8&t=${Date.now()}`, { cache: 'no-store' });
+    } catch {
+        try {
+            response = await fetch(`https://www.bing.com/HPImageArchive.aspx?format=js&idx=${randomIdx}&n=8&t=${Date.now()}`, { cache: 'no-store' });
+        } catch {
+            return { ok: false, error: '无法连接必应壁纸服务，请检查网络' };
+        }
+    }
+    if (!response.ok) return { ok: false, error: `壁纸服务暂时不可用（${response.status}）` };
+
+    interface BingImageItem {
+        url?: string;
+        urlbase?: string;
+    }
+    let data: { images?: BingImageItem[] };
+    try {
+        data = await response.json() as { images?: BingImageItem[] };
+    } catch {
+        return { ok: false, error: '壁纸数据解析失败' };
+    }
+
+    const list = data?.images;
+    if (!Array.isArray(list) || list.length === 0) {
+        return { ok: false, error: '未获取到有效的风光壁纸数据' };
+    }
+
+    const chosen = list[Math.floor(Math.random() * list.length)];
+    const rawUrl = chosen.url || (chosen.urlbase ? `${chosen.urlbase}_1920x1080.jpg` : '');
+    if (!rawUrl) return { ok: false, error: '壁纸地址无效' };
+    const imageUrl = rawUrl.startsWith('http') ? rawUrl : `${BING_BASE_URL}${rawUrl}`;
+
+    let imgResponse: Response;
+    try {
+        imgResponse = await fetch(imageUrl, { cache: 'no-store' });
+    } catch {
+        return { ok: false, error: '下载壁纸图片失败，请检查网络' };
+    }
+    if (!imgResponse.ok) return { ok: false, error: `下载壁纸失败（${imgResponse.status}）` };
+
+    const bytes = new Uint8Array(await imgResponse.arrayBuffer());
+    return {
+        ok: true,
+        body: bytesToBase64(bytes),
+        contentType: imgResponse.headers.get('content-type') || 'image/jpeg'
+    };
 }
 
 function describeTransportError(error: unknown): string {

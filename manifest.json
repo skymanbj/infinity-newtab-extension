@@ -11,6 +11,7 @@
         "favicon"
     ],
     "host_permissions": [
+        "https://*.bing.com/*",
         "https://www.dmoe.cc/*"
     ],
     "optional_host_permissions": [

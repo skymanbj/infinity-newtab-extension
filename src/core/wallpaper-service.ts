@@ -1,28 +1,38 @@
+import { base64ToBytes } from './base64';
 import { mediaStore, type MediaKind } from './media-store';
 import { appStore } from './store';
 import type { ResolvedTheme, WallpaperSettings } from './types';
+import { BING_WALLPAPER_REQUEST_TYPE, type BingWallpaperResponseMessage } from './wallpaper-bridge';
 
-const ONLINE_WALLPAPER = 'https://www.dmoe.cc/random.php';
 const SAMPLE_SIZE = 32;
 /** Above this average luminance the page switches to dark text. */
 const LIGHT_THRESHOLD = 0.58;
 
 /**
- * Downloads one random image and keeps it in IndexedDB, so every new tab shows
- * the same picture instantly instead of re-hitting the online API.
+ * Downloads one random Bing scenery image via background service worker (to bypass MV3 CORS)
+ * and keeps it in IndexedDB, so every new tab shows the same picture instantly instead of re-hitting the online API.
  */
 export async function useOnlineWallpaper(): Promise<void> {
-    let response: Response;
-    try {
-        response = await fetch(`${ONLINE_WALLPAPER}?t=${Date.now()}`, { cache: 'no-store' });
-    } catch {
-        throw new Error('无法连接在线壁纸服务，请检查网络');
+    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+        let result: BingWallpaperResponseMessage | undefined;
+        try {
+            result = await chrome.runtime.sendMessage({ type: BING_WALLPAPER_REQUEST_TYPE }) as BingWallpaperResponseMessage;
+        } catch {
+            throw new Error('后台服务连接失败：请在 chrome://extensions 刷新本插件');
+        }
+        if (!result) {
+            throw new Error('后台服务未响应：请在 chrome://extensions 刷新本插件');
+        }
+        if (!result.ok || !result.body) {
+            throw new Error(result.error || '获取必应壁纸失败');
+        }
+        const bytes = base64ToBytes(result.body);
+        const blob = new Blob([bytes], { type: result.contentType || 'image/jpeg' });
+        await validateLocalMedia(blob, 'image');
+        await storeWallpaper(blob, 'image', 'online');
+        return;
     }
-    if (!response.ok) throw new Error(`在线壁纸服务暂时不可用（${response.status}）`);
-    const blob = await response.blob();
-    if (!blob.type.startsWith('image/')) throw new Error('在线壁纸服务返回的不是图片');
-    await validateLocalMedia(blob, 'image');
-    await storeWallpaper(blob, 'image', 'online');
+    throw new Error('当前环境不支持在线壁纸获取');
 }
 
 /**
@@ -31,7 +41,7 @@ export async function useOnlineWallpaper(): Promise<void> {
  */
 export async function migrateLegacyWallpaper(): Promise<void> {
     const { type, value } = appStore.state.settings.wallpaper;
-    if (type !== 'preset' || !value.startsWith(ONLINE_WALLPAPER)) return;
+    if (type !== 'preset' || (!value.startsWith('https://www.dmoe.cc') && !value.includes('bing.com'))) return;
     try {
         await useOnlineWallpaper();
     } catch {
@@ -53,7 +63,7 @@ export async function resetWallpaper(): Promise<void> {
 
 export function wallpaperLabel(wallpaper: WallpaperSettings): string {
     if (wallpaper.type === 'video') return '本地视频';
-    if (wallpaper.type === 'local') return wallpaper.value.startsWith('online') ? '在线壁纸' : '本地图片';
+    if (wallpaper.type === 'local') return wallpaper.value.startsWith('online') ? '必应风光' : '本地图片';
     if (wallpaper.type === 'preset') return '在线图片';
     return '默认渐变';
 }

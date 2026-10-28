@@ -91,7 +91,7 @@ class InfinityNewTabApp extends HTMLElement {
                 <header class="top-bar">
                     <status-strip></status-strip>
                     <div class="top-actions">
-                        <button class="glass round-button shuffle-wallpaper" type="button" data-liquid-item aria-label="换一个在线壁纸" title="换一个在线壁纸">${ICONS.sparkle}</button>
+                        <button class="glass round-button shuffle-wallpaper" type="button" data-liquid-item aria-label="换一张风光壁纸" title="换一张风光壁纸">${ICONS.sparkle}</button>
                         <button class="glass round-button settings-trigger" type="button" data-liquid-item aria-label="设置" title="设置">${ICONS.settings}</button>
                     </div>
                 </header>

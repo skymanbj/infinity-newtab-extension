@@ -52,16 +52,37 @@
     }
   });
 
+  // src/core/wallpaper-bridge.ts
+  function isBingWallpaperRequestMessage(value) {
+    return Boolean(value && typeof value === "object" && value.type === BING_WALLPAPER_REQUEST_TYPE);
+  }
+  var BING_WALLPAPER_REQUEST_TYPE;
+  var init_wallpaper_bridge = __esm({
+    "src/core/wallpaper-bridge.ts"() {
+      "use strict";
+      BING_WALLPAPER_REQUEST_TYPE = "infinity-newtab-bing-wallpaper-request";
+    }
+  });
+
   // src/background.ts
   var require_background = __commonJS({
     "src/background.ts"() {
       init_base64();
       init_webdav_bridge();
+      init_wallpaper_bridge();
       var MAX_TIMEOUT = 6e5;
+      var BING_ARCHIVE_URL = "https://cn.bing.com/HPImageArchive.aspx";
+      var BING_BASE_URL = "https://cn.bing.com";
       chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-        if (!isWebDavRequestMessage(message)) return false;
-        void perform(message).then(sendResponse).catch((error) => sendResponse({ error: describeTransportError(error) }));
-        return true;
+        if (isWebDavRequestMessage(message)) {
+          void perform(message).then(sendResponse).catch((error) => sendResponse({ error: describeTransportError(error) }));
+          return true;
+        }
+        if (isBingWallpaperRequestMessage(message)) {
+          void fetchBingWallpaper().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "\u83B7\u53D6\u5FC5\u5E94\u58C1\u7EB8\u5931\u8D25" }));
+          return true;
+        }
+        return false;
       });
       async function perform(message) {
         try {
@@ -77,6 +98,47 @@
         } catch (error) {
           return { error: describeTransportError(error) };
         }
+      }
+      async function fetchBingWallpaper() {
+        const randomIdx = Math.floor(Math.random() * 8);
+        let response;
+        try {
+          response = await fetch(`${BING_ARCHIVE_URL}?format=js&idx=${randomIdx}&n=8&t=${Date.now()}`, { cache: "no-store" });
+        } catch {
+          try {
+            response = await fetch(`https://www.bing.com/HPImageArchive.aspx?format=js&idx=${randomIdx}&n=8&t=${Date.now()}`, { cache: "no-store" });
+          } catch {
+            return { ok: false, error: "\u65E0\u6CD5\u8FDE\u63A5\u5FC5\u5E94\u58C1\u7EB8\u670D\u52A1\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC" };
+          }
+        }
+        if (!response.ok) return { ok: false, error: `\u58C1\u7EB8\u670D\u52A1\u6682\u65F6\u4E0D\u53EF\u7528\uFF08${response.status}\uFF09` };
+        let data;
+        try {
+          data = await response.json();
+        } catch {
+          return { ok: false, error: "\u58C1\u7EB8\u6570\u636E\u89E3\u6790\u5931\u8D25" };
+        }
+        const list = data?.images;
+        if (!Array.isArray(list) || list.length === 0) {
+          return { ok: false, error: "\u672A\u83B7\u53D6\u5230\u6709\u6548\u7684\u98CE\u5149\u58C1\u7EB8\u6570\u636E" };
+        }
+        const chosen = list[Math.floor(Math.random() * list.length)];
+        const rawUrl = chosen.url || (chosen.urlbase ? `${chosen.urlbase}_1920x1080.jpg` : "");
+        if (!rawUrl) return { ok: false, error: "\u58C1\u7EB8\u5730\u5740\u65E0\u6548" };
+        const imageUrl = rawUrl.startsWith("http") ? rawUrl : `${BING_BASE_URL}${rawUrl}`;
+        let imgResponse;
+        try {
+          imgResponse = await fetch(imageUrl, { cache: "no-store" });
+        } catch {
+          return { ok: false, error: "\u4E0B\u8F7D\u58C1\u7EB8\u56FE\u7247\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC" };
+        }
+        if (!imgResponse.ok) return { ok: false, error: `\u4E0B\u8F7D\u58C1\u7EB8\u5931\u8D25\uFF08${imgResponse.status}\uFF09` };
+        const bytes = new Uint8Array(await imgResponse.arrayBuffer());
+        return {
+          ok: true,
+          body: bytesToBase64(bytes),
+          contentType: imgResponse.headers.get("content-type") || "image/jpeg"
+        };
       }
       function describeTransportError(error) {
         if (error instanceof DOMException && error.name === "TimeoutError") return "\u8BF7\u6C42\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u54CD\u5E94\u592A\u6162";

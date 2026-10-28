@@ -176,13 +176,13 @@ export class SettingsPanel extends StoreElement {
                     <span class="row-sub wallpaper-meta"></span>
                     <div class="wallpaper-actions">
                         <label class="pill-button primary upload-wallpaper" data-liquid-item>选择视频或图片…<input type="file" accept="image/*,video/*" hidden></label>
-                        <button class="pill-button random-wallpaper" type="button" data-liquid-item>换一个在线壁纸</button>
+                        <button class="pill-button random-wallpaper" type="button" data-liquid-item>换一张风光壁纸</button>
                         <button class="pill-button reset-wallpaper" type="button" data-liquid-item>恢复默认</button>
                     </div>
                 </div>
             </div>
             ${group('显示', `
-                ${segmentRow('wallpaperKind', '类型', wallpaperKind(wallpaper), [['video', '视频'], ['image', '图片'], ['online', '在线']], '默认是内置的动态场景 Twilight Bay')}
+                ${segmentRow('wallpaperKind', '类型', wallpaperKind(wallpaper), [['video', '视频'], ['image', '图片'], ['online', '风光']], '默认是内置的动态场景 Twilight Bay')}
                 ${rangeRow('blur', '模糊', wallpaper.blur, 0, 40, 'px')}
                 ${rangeRow('overlay', '暗化', wallpaper.overlay, 0, 60, '%', '', '让白色文字在亮壁纸上也清楚')}
             `)}

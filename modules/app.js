@@ -851,6 +851,27 @@
     }
   });
 
+  // src/core/base64.ts
+  function bytesToBase64(bytes) {
+    const chunkSize = 32768;
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+  }
+  function base64ToBytes(value) {
+    const binary = atob(value);
+    const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+  var init_base64 = __esm({
+    "src/core/base64.ts"() {
+      "use strict";
+    }
+  });
+
   // src/core/media-store.ts
   function blobToDataUrl(blob) {
     return new Promise((resolve, reject) => {
@@ -944,23 +965,41 @@
     }
   });
 
+  // src/core/wallpaper-bridge.ts
+  var BING_WALLPAPER_REQUEST_TYPE;
+  var init_wallpaper_bridge = __esm({
+    "src/core/wallpaper-bridge.ts"() {
+      "use strict";
+      BING_WALLPAPER_REQUEST_TYPE = "infinity-newtab-bing-wallpaper-request";
+    }
+  });
+
   // src/core/wallpaper-service.ts
   async function useOnlineWallpaper() {
-    let response;
-    try {
-      response = await fetch(`${ONLINE_WALLPAPER}?t=${Date.now()}`, { cache: "no-store" });
-    } catch {
-      throw new Error("\u65E0\u6CD5\u8FDE\u63A5\u5728\u7EBF\u58C1\u7EB8\u670D\u52A1\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC");
+    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+      let result;
+      try {
+        result = await chrome.runtime.sendMessage({ type: BING_WALLPAPER_REQUEST_TYPE });
+      } catch {
+        throw new Error("\u540E\u53F0\u670D\u52A1\u8FDE\u63A5\u5931\u8D25\uFF1A\u8BF7\u5728 chrome://extensions \u5237\u65B0\u672C\u63D2\u4EF6");
+      }
+      if (!result) {
+        throw new Error("\u540E\u53F0\u670D\u52A1\u672A\u54CD\u5E94\uFF1A\u8BF7\u5728 chrome://extensions \u5237\u65B0\u672C\u63D2\u4EF6");
+      }
+      if (!result.ok || !result.body) {
+        throw new Error(result.error || "\u83B7\u53D6\u5FC5\u5E94\u58C1\u7EB8\u5931\u8D25");
+      }
+      const bytes = base64ToBytes(result.body);
+      const blob = new Blob([bytes], { type: result.contentType || "image/jpeg" });
+      await validateLocalMedia(blob, "image");
+      await storeWallpaper(blob, "image", "online");
+      return;
     }
-    if (!response.ok) throw new Error(`\u5728\u7EBF\u58C1\u7EB8\u670D\u52A1\u6682\u65F6\u4E0D\u53EF\u7528\uFF08${response.status}\uFF09`);
-    const blob = await response.blob();
-    if (!blob.type.startsWith("image/")) throw new Error("\u5728\u7EBF\u58C1\u7EB8\u670D\u52A1\u8FD4\u56DE\u7684\u4E0D\u662F\u56FE\u7247");
-    await validateLocalMedia(blob, "image");
-    await storeWallpaper(blob, "image", "online");
+    throw new Error("\u5F53\u524D\u73AF\u5883\u4E0D\u652F\u6301\u5728\u7EBF\u58C1\u7EB8\u83B7\u53D6");
   }
   async function migrateLegacyWallpaper() {
     const { type, value } = appStore.state.settings.wallpaper;
-    if (type !== "preset" || !value.startsWith(ONLINE_WALLPAPER)) return;
+    if (type !== "preset" || !value.startsWith("https://www.dmoe.cc") && !value.includes("bing.com")) return;
     try {
       await useOnlineWallpaper();
     } catch {
@@ -978,7 +1017,7 @@
   }
   function wallpaperLabel(wallpaper) {
     if (wallpaper.type === "video") return "\u672C\u5730\u89C6\u9891";
-    if (wallpaper.type === "local") return wallpaper.value.startsWith("online") ? "\u5728\u7EBF\u58C1\u7EB8" : "\u672C\u5730\u56FE\u7247";
+    if (wallpaper.type === "local") return wallpaper.value.startsWith("online") ? "\u5FC5\u5E94\u98CE\u5149" : "\u672C\u5730\u56FE\u7247";
     if (wallpaper.type === "preset") return "\u5728\u7EBF\u56FE\u7247";
     return "\u9ED8\u8BA4\u6E10\u53D8";
   }
@@ -1073,13 +1112,14 @@
   function errorMessage(error) {
     return error instanceof Error ? error.message : "\u64CD\u4F5C\u5931\u8D25";
   }
-  var ONLINE_WALLPAPER, SAMPLE_SIZE, LIGHT_THRESHOLD;
+  var SAMPLE_SIZE, LIGHT_THRESHOLD;
   var init_wallpaper_service = __esm({
     "src/core/wallpaper-service.ts"() {
       "use strict";
+      init_base64();
       init_media_store();
       init_store();
-      ONLINE_WALLPAPER = "https://www.dmoe.cc/random.php";
+      init_wallpaper_bridge();
       SAMPLE_SIZE = 32;
       LIGHT_THRESHOLD = 0.58;
     }
@@ -4026,27 +4066,6 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     }
   });
 
-  // src/core/base64.ts
-  function bytesToBase64(bytes) {
-    const chunkSize = 32768;
-    let binary = "";
-    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
-    }
-    return btoa(binary);
-  }
-  function base64ToBytes(value) {
-    const binary = atob(value);
-    const bytes = new Uint8Array(new ArrayBuffer(binary.length));
-    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-    return bytes;
-  }
-  var init_base64 = __esm({
-    "src/core/base64.ts"() {
-      "use strict";
-    }
-  });
-
   // src/core/webdav-bridge.ts
   function isWebDavResponseMessage(value) {
     if (!value || typeof value !== "object") return false;
@@ -4485,13 +4504,13 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                     <span class="row-sub wallpaper-meta"></span>
                     <div class="wallpaper-actions">
                         <label class="pill-button primary upload-wallpaper" data-liquid-item>\u9009\u62E9\u89C6\u9891\u6216\u56FE\u7247\u2026<input type="file" accept="image/*,video/*" hidden></label>
-                        <button class="pill-button random-wallpaper" type="button" data-liquid-item>\u6362\u4E00\u4E2A\u5728\u7EBF\u58C1\u7EB8</button>
+                        <button class="pill-button random-wallpaper" type="button" data-liquid-item>\u6362\u4E00\u5F20\u98CE\u5149\u58C1\u7EB8</button>
                         <button class="pill-button reset-wallpaper" type="button" data-liquid-item>\u6062\u590D\u9ED8\u8BA4</button>
                     </div>
                 </div>
             </div>
             ${group("\u663E\u793A", `
-                ${segmentRow("wallpaperKind", "\u7C7B\u578B", wallpaperKind(wallpaper), [["video", "\u89C6\u9891"], ["image", "\u56FE\u7247"], ["online", "\u5728\u7EBF"]], "\u9ED8\u8BA4\u662F\u5185\u7F6E\u7684\u52A8\u6001\u573A\u666F Twilight Bay")}
+                ${segmentRow("wallpaperKind", "\u7C7B\u578B", wallpaperKind(wallpaper), [["video", "\u89C6\u9891"], ["image", "\u56FE\u7247"], ["online", "\u98CE\u5149"]], "\u9ED8\u8BA4\u662F\u5185\u7F6E\u7684\u52A8\u6001\u573A\u666F Twilight Bay")}
                 ${rangeRow("blur", "\u6A21\u7CCA", wallpaper.blur, 0, 40, "px")}
                 ${rangeRow("overlay", "\u6697\u5316", wallpaper.overlay, 0, 60, "%", "", "\u8BA9\u767D\u8272\u6587\u5B57\u5728\u4EAE\u58C1\u7EB8\u4E0A\u4E5F\u6E05\u695A")}
             `)}
@@ -5249,7 +5268,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         }
         get state() {
           const { type, value } = appStore.state.settings.wallpaper;
-          const label = type === "gradient" ? "Twilight Bay \xB7 \u52A8\u6001" : type === "video" ? "\u672C\u5730\u89C6\u9891 \xB7 \u52A8\u6001" : type === "local" ? value.startsWith("online") ? "\u5728\u7EBF\u58C1\u7EB8" : "\u672C\u5730\u56FE\u7247" : "\u5728\u7EBF\u56FE\u7247";
+          const label = type === "gradient" ? "Twilight Bay \xB7 \u52A8\u6001" : type === "video" ? "\u672C\u5730\u89C6\u9891 \xB7 \u52A8\u6001" : type === "local" ? value.startsWith("online") ? "\u5FC5\u5E94\u98CE\u5149" : "\u672C\u5730\u56FE\u7247" : "\u5728\u7EBF\u56FE\u7247";
           return { label, animated: type === "gradient" || type === "video", paused: this.userPaused };
         }
         togglePaused() {
@@ -5526,7 +5545,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 <header class="top-bar">
                     <status-strip></status-strip>
                     <div class="top-actions">
-                        <button class="glass round-button shuffle-wallpaper" type="button" data-liquid-item aria-label="\u6362\u4E00\u4E2A\u5728\u7EBF\u58C1\u7EB8" title="\u6362\u4E00\u4E2A\u5728\u7EBF\u58C1\u7EB8">${ICONS.sparkle}</button>
+                        <button class="glass round-button shuffle-wallpaper" type="button" data-liquid-item aria-label="\u6362\u4E00\u5F20\u98CE\u5149\u58C1\u7EB8" title="\u6362\u4E00\u5F20\u98CE\u5149\u58C1\u7EB8">${ICONS.sparkle}</button>
                         <button class="glass round-button settings-trigger" type="button" data-liquid-item aria-label="\u8BBE\u7F6E" title="\u8BBE\u7F6E">${ICONS.settings}</button>
                     </div>
                 </header>
