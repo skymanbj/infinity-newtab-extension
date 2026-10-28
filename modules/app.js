@@ -5205,6 +5205,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           button.title = action;
           button.setAttribute("aria-pressed", String(paused));
           button.innerHTML = paused ? ICONS.play : ICONS.pause;
+          this.hidden = !animated && !label;
         }
       };
     }
@@ -5267,8 +5268,8 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           this.releaseObjectUrl();
         }
         get state() {
-          const { type, value } = appStore.state.settings.wallpaper;
-          const label = type === "gradient" ? "Twilight Bay \xB7 \u52A8\u6001" : type === "video" ? "\u672C\u5730\u89C6\u9891 \xB7 \u52A8\u6001" : type === "local" ? value.startsWith("online") ? "\u5FC5\u5E94\u98CE\u5149" : "\u672C\u5730\u56FE\u7247" : "\u5728\u7EBF\u56FE\u7247";
+          const { type } = appStore.state.settings.wallpaper;
+          const label = type === "gradient" ? "Twilight Bay \xB7 \u52A8\u6001" : type === "video" ? "\u672C\u5730\u89C6\u9891 \xB7 \u52A8\u6001" : "";
           return { label, animated: type === "gradient" || type === "video", paused: this.userPaused };
         }
         togglePaused() {

@@ -788,6 +788,10 @@ wallpaper-badge {
     gap: 10px;
 }
 
+wallpaper-badge[hidden] {
+    display: none;
+}
+
 .wallpaper-label {
     color: var(--fg-2);
     font-size: 12px;

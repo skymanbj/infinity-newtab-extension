@@ -35,5 +35,6 @@ export class WallpaperBadge extends HTMLElement {
         button.title = action;
         button.setAttribute('aria-pressed', String(paused));
         button.innerHTML = paused ? ICONS.play : ICONS.pause;
+        this.hidden = !animated && !label;
     }
 }

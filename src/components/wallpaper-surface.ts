@@ -39,11 +39,10 @@ export class WallpaperSurface extends StoreElement {
     }
 
     get state(): WallpaperState {
-        const { type, value } = appStore.state.settings.wallpaper;
+        const { type } = appStore.state.settings.wallpaper;
         const label = type === 'gradient' ? 'Twilight Bay · 动态'
             : type === 'video' ? '本地视频 · 动态'
-                : type === 'local' ? (value.startsWith('online') ? '必应风光' : '本地图片')
-                    : '在线图片';
+                : '';
         return { label, animated: type === 'gradient' || type === 'video', paused: this.userPaused };
     }
 
