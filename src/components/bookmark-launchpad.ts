@@ -122,12 +122,15 @@ export class BookmarkLaunchpad extends StoreElement {
             <div class="launchpad-backdrop" aria-hidden="true"></div>
             <section class="launchpad" role="dialog" aria-modal="true" aria-label="启动台">
                 <header class="launchpad-top">
-                    <label class="glass launchpad-search">
-                        ${ICONS.search}
-                        <input type="search" placeholder="在书签中搜索" aria-label="在书签中搜索" autocomplete="off" spellcheck="false">
-                    </label>
-                    <div class="glass launchpad-tabs" role="tablist" aria-label="书签分组">
-                        <div class="launchpad-tab-track"></div>
+                    <div class="glass launchpad-bar">
+                        <label class="launchpad-search">
+                            ${ICONS.search}
+                            <input type="search" placeholder="在书签中搜索" aria-label="在书签中搜索" autocomplete="off" spellcheck="false">
+                        </label>
+                        <span class="launchpad-bar-divider" aria-hidden="true"></span>
+                        <div class="launchpad-tabs" role="tablist" aria-label="书签分组">
+                            <div class="launchpad-tab-track"></div>
+                        </div>
                     </div>
                 </header>
                 <button class="glass launchpad-done" type="button" data-liquid-item>完成</button>

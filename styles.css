@@ -1119,20 +1119,32 @@ body.theme-light .launchpad-backdrop {
 
 .launchpad-top {
     display: flex;
-    flex-direction: column;
+    justify-content: center;
     align-items: center;
-    gap: 18px;
     padding: 40px 16px 0;
+}
+
+.launchpad-bar {
+    display: flex;
+    align-items: center;
+    max-width: min(880px, calc(100vw - 120px));
+    height: 40px;
+    padding: 3px 4px 3px 14px;
+    border-radius: 999px;
 }
 
 .launchpad-search {
     display: flex;
-    width: min(300px, 100%);
-    height: 36px;
     align-items: center;
     gap: 8px;
-    padding: 0 14px;
-    border-radius: 999px;
+    width: 280px;
+    flex-shrink: 0;
+    cursor: text;
+    transition: width 200ms ease;
+}
+
+.launchpad-search:focus-within {
+    width: 320px;
 }
 
 .launchpad-search .icon {
@@ -1140,6 +1152,7 @@ body.theme-light .launchpad-backdrop {
     height: 15px;
     opacity: 0.8;
     stroke-width: 2.4;
+    flex-shrink: 0;
 }
 
 .launchpad-search input,
@@ -1157,10 +1170,19 @@ body.theme-light .launchpad-backdrop {
     color: var(--fg-3);
 }
 
+.launchpad-bar-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--hairline-strong);
+    margin: 0 10px 0 6px;
+    flex-shrink: 0;
+}
+
 .launchpad-tabs {
     display: flex;
-    max-width: 100%;
-    padding: 4px;
+    min-width: 0;
+    flex: 1;
+    padding: 0;
     border-radius: 999px;
     overflow: hidden;
 }
@@ -2602,6 +2624,18 @@ liquid-glass-system {
 
     .launchpad-top {
         padding-top: 84px;
+    }
+
+    .launchpad-bar {
+        max-width: calc(100vw - 32px);
+    }
+
+    .launchpad-search {
+        width: 120px;
+    }
+
+    .launchpad-search:focus-within {
+        width: 140px;
     }
 
     .launchpad-done {

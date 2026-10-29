@@ -2223,12 +2223,15 @@
             <div class="launchpad-backdrop" aria-hidden="true"></div>
             <section class="launchpad" role="dialog" aria-modal="true" aria-label="\u542F\u52A8\u53F0">
                 <header class="launchpad-top">
-                    <label class="glass launchpad-search">
-                        ${ICONS.search}
-                        <input type="search" placeholder="\u5728\u4E66\u7B7E\u4E2D\u641C\u7D22" aria-label="\u5728\u4E66\u7B7E\u4E2D\u641C\u7D22" autocomplete="off" spellcheck="false">
-                    </label>
-                    <div class="glass launchpad-tabs" role="tablist" aria-label="\u4E66\u7B7E\u5206\u7EC4">
-                        <div class="launchpad-tab-track"></div>
+                    <div class="glass launchpad-bar">
+                        <label class="launchpad-search">
+                            ${ICONS.search}
+                            <input type="search" placeholder="\u5728\u4E66\u7B7E\u4E2D\u641C\u7D22" aria-label="\u5728\u4E66\u7B7E\u4E2D\u641C\u7D22" autocomplete="off" spellcheck="false">
+                        </label>
+                        <span class="launchpad-bar-divider" aria-hidden="true"></span>
+                        <div class="launchpad-tabs" role="tablist" aria-label="\u4E66\u7B7E\u5206\u7EC4">
+                            <div class="launchpad-tab-track"></div>
+                        </div>
                     </div>
                 </header>
                 <button class="glass launchpad-done" type="button" data-liquid-item>\u5B8C\u6210</button>
