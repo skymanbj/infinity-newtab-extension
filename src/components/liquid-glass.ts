@@ -57,6 +57,7 @@ export class LiquidGlassSystem extends HTMLElement {
         document.addEventListener('focusout', this.onFocusOut, true);
         window.addEventListener('resize', this.onViewportChange);
         window.addEventListener('scroll', this.onViewportChange, true);
+        document.addEventListener('transitionend', this.onTransitionEnd, true);
     }
 
     disconnectedCallback(): void {
@@ -68,6 +69,7 @@ export class LiquidGlassSystem extends HTMLElement {
         document.removeEventListener('focusout', this.onFocusOut, true);
         window.removeEventListener('resize', this.onViewportChange);
         window.removeEventListener('scroll', this.onViewportChange, true);
+        document.removeEventListener('transitionend', this.onTransitionEnd, true);
         window.clearTimeout(this.hideTimer);
         cancelAnimationFrame(this.controlFrame);
         cancelAnimationFrame(this.pointerFrame);
@@ -147,6 +149,12 @@ export class LiquidGlassSystem extends HTMLElement {
         if (this.activeControl?.isConnected) this.renderControl(this.activeControl);
         else if (this.activeItem?.isConnected) this.render(geometryFor(this.activeItem));
         else this.hide();
+    };
+
+    private readonly onTransitionEnd = (event: TransitionEvent): void => {
+        if (this.activeItem?.isConnected && (event.target === this.activeItem || this.activeItem.contains(event.target as Node))) {
+            this.render(geometryFor(this.activeItem));
+        }
     };
 
     private activate(item: HTMLElement): void {

@@ -122,7 +122,7 @@ export class BookmarkLaunchpad extends StoreElement {
             <div class="launchpad-backdrop" aria-hidden="true"></div>
             <section class="launchpad" role="dialog" aria-modal="true" aria-label="启动台">
                 <header class="launchpad-top">
-                    <div class="glass launchpad-bar">
+                    <div class="glass launchpad-bar" data-liquid-item>
                         <label class="launchpad-search">
                             ${ICONS.search}
                             <input type="search" placeholder="在书签中搜索" aria-label="在书签中搜索" autocomplete="off" spellcheck="false">
@@ -142,7 +142,7 @@ export class BookmarkLaunchpad extends StoreElement {
     private tabsTemplate(): string {
         const { bookmarks, folders } = appStore.state;
         const tab = (label: string, active: boolean, attributes: string) => `
-            <button class="launchpad-tab ${active ? 'is-active' : ''}" type="button" role="tab" aria-selected="${active}" tabindex="${active ? 0 : -1}" data-liquid-item ${attributes}>${label}</button>`;
+            <button class="launchpad-tab ${active ? 'is-active' : ''}" type="button" role="tab" aria-selected="${active}" tabindex="${active ? 0 : -1}" ${attributes}>${label}</button>`;
         const browsing = !this.query;
         return `
                 ${tab(`全部 · ${bookmarks.length}`, browsing && this.view === 'bookmarks' && this.folder === ROOT_FOLDER, `data-folder="${ROOT_FOLDER}" data-drop-folder="${ROOT_FOLDER}"`)}
@@ -152,7 +152,7 @@ export class BookmarkLaunchpad extends StoreElement {
                     browsing && this.view === 'bookmarks' && this.folder === folder,
                     `data-folder="${escapeHtml(folder)}" data-drop-folder="${escapeHtml(folder)}"`
                 )).join('')}
-                <button class="launchpad-tab create-folder" type="button" data-liquid-item aria-label="新建文件夹" title="新建文件夹">${ICONS.plus}</button>`;
+                <button class="launchpad-tab create-folder" type="button" aria-label="新建文件夹" title="新建文件夹">${ICONS.plus}</button>`;
     }
 
     private gridTemplate(): string {
