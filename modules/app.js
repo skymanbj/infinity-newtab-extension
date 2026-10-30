@@ -2223,7 +2223,7 @@
             <div class="launchpad-backdrop" aria-hidden="true"></div>
             <section class="launchpad" role="dialog" aria-modal="true" aria-label="\u542F\u52A8\u53F0">
                 <header class="launchpad-top">
-                    <div class="glass launchpad-bar">
+                    <div class="glass launchpad-bar" data-liquid-item>
                         <label class="launchpad-search">
                             ${ICONS.search}
                             <input type="search" placeholder="\u5728\u4E66\u7B7E\u4E2D\u641C\u7D22" aria-label="\u5728\u4E66\u7B7E\u4E2D\u641C\u7D22" autocomplete="off" spellcheck="false">
@@ -2242,7 +2242,7 @@
         tabsTemplate() {
           const { bookmarks, folders } = appStore.state;
           const tab = (label, active, attributes) => `
-            <button class="launchpad-tab ${active ? "is-active" : ""}" type="button" role="tab" aria-selected="${active}" tabindex="${active ? 0 : -1}" data-liquid-item ${attributes}>${label}</button>`;
+            <button class="launchpad-tab ${active ? "is-active" : ""}" type="button" role="tab" aria-selected="${active}" tabindex="${active ? 0 : -1}" ${attributes}>${label}</button>`;
           const browsing = !this.query;
           return `
                 ${tab(`\u5168\u90E8 \xB7 ${bookmarks.length}`, browsing && this.view === "bookmarks" && this.folder === ROOT_FOLDER, `data-folder="${ROOT_FOLDER}" data-drop-folder="${ROOT_FOLDER}"`)}
@@ -2252,7 +2252,7 @@
             browsing && this.view === "bookmarks" && this.folder === folder,
             `data-folder="${escapeHtml(folder)}" data-drop-folder="${escapeHtml(folder)}"`
           )).join("")}
-                <button class="launchpad-tab create-folder" type="button" data-liquid-item aria-label="\u65B0\u5EFA\u6587\u4EF6\u5939" title="\u65B0\u5EFA\u6587\u4EF6\u5939">${ICONS.plus}</button>`;
+                <button class="launchpad-tab create-folder" type="button" aria-label="\u65B0\u5EFA\u6587\u4EF6\u5939" title="\u65B0\u5EFA\u6587\u4EF6\u5939">${ICONS.plus}</button>`;
         }
         gridTemplate() {
           if (this.query) {
@@ -3340,6 +3340,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           document.addEventListener("focusout", this.onFocusOut, true);
           window.addEventListener("resize", this.onViewportChange);
           window.addEventListener("scroll", this.onViewportChange, true);
+          document.addEventListener("transitionend", this.onTransitionEnd, true);
         }
         disconnectedCallback() {
           document.removeEventListener("pointerover", this.onPointerOver, true);
@@ -3350,6 +3351,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           document.removeEventListener("focusout", this.onFocusOut, true);
           window.removeEventListener("resize", this.onViewportChange);
           window.removeEventListener("scroll", this.onViewportChange, true);
+          document.removeEventListener("transitionend", this.onTransitionEnd, true);
           window.clearTimeout(this.hideTimer);
           cancelAnimationFrame(this.controlFrame);
           cancelAnimationFrame(this.pointerFrame);
@@ -3421,6 +3423,11 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           if (this.activeControl?.isConnected) this.renderControl(this.activeControl);
           else if (this.activeItem?.isConnected) this.render(geometryFor(this.activeItem));
           else this.hide();
+        };
+        onTransitionEnd = (event) => {
+          if (this.activeItem?.isConnected && (event.target === this.activeItem || this.activeItem.contains(event.target))) {
+            this.render(geometryFor(this.activeItem));
+          }
         };
         activate(item) {
           this.cancelHide();
