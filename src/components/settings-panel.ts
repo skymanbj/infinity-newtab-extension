@@ -52,6 +52,7 @@ export class SettingsPanel extends StoreElement {
     private releaseLayer: (() => void) | null = null;
     private previewUrl = '';
     private previewToken = 0;
+    private excludedKey = '\u0000unset';
 
     open(pane?: Pane): void {
         if (pane) this.selectPane(pane);
@@ -88,6 +89,7 @@ export class SettingsPanel extends StoreElement {
 
     protected render(): void {
         const settings = appStore.state.settings;
+        this.excludedKey = '\u0000unset';
         this.innerHTML = `
             <div class="settings-scrim" aria-hidden="true"></div>
             <section class="glass glass-window settings-window" role="dialog" aria-modal="true" aria-label="设置" aria-hidden="true" inert>
@@ -153,7 +155,7 @@ export class SettingsPanel extends StoreElement {
                 ${rangeRow('dockSize', '图标大小', layout.dockSize, 40, 72, '', 'showBookmarks')}
                 ${toggleRow('dockMagnify', '悬停放大', '', 'showBookmarks')}
                 ${toggleRow('openInNewTab', '在新标签页打开书签')}
-                ${infoRow('隐藏的常访问站点', `在常访问站点上右键“从常访问移除”会隐藏在这里，共 ${layout.recentExcluded.length} 个`, `<button class="pill-button restore-recent" type="button" data-liquid-item${layout.recentExcluded.length ? '' : ' disabled'}>恢复全部</button>`)}
+                ${recentExcludedRow(layout.recentExcluded)}
             `)}
             ${group('搜索', `
                 ${segmentRow('searchEngine', '默认搜索引擎', layout.searchEngine, Object.entries(ENGINES).map(([key, engine]) => [key, engine.label] as Option))}
@@ -325,6 +327,14 @@ export class SettingsPanel extends StoreElement {
                 if (count) notify(`已恢复 ${count} 个常访问站点`);
             }).catch(notifyError);
         });
+        this.querySelector('.recent-excluded-list')?.addEventListener('click', (event) => {
+            const chip = (event.target as HTMLElement).closest<HTMLElement>('.recent-excluded-chip');
+            const host = chip?.dataset.recentHost;
+            if (!host) return;
+            void appStore.restoreRecentSite(host).then((done) => {
+                if (done) notify(`已恢复 ${host}`);
+            }).catch(notifyError);
+        });
         this.querySelector('.export-data')?.addEventListener('click', () => void backupService.createBackup().catch(notifyError));
         this.querySelector<HTMLInputElement>('.import-data input')?.addEventListener('change', (event) => {
             const input = event.target as HTMLInputElement;
@@ -371,6 +381,8 @@ export class SettingsPanel extends StoreElement {
         const query = value.trim().toLowerCase();
         if (!query) {
             this.querySelectorAll<HTMLElement>('.setting-row, .settings-group, .settings-heading').forEach((element) => { element.hidden = false; });
+            const list = this.querySelector<HTMLElement>('.recent-excluded-list');
+            if (list) list.hidden = !list.childElementCount;
             this.querySelector<HTMLElement>('.settings-empty')!.hidden = true;
             this.selectPane(this.activePane);
             return;
@@ -379,6 +391,9 @@ export class SettingsPanel extends StoreElement {
             button.classList.remove('is-active');
             button.removeAttribute('aria-current');
         });
+        // 搜索时只留标题行，标签列表跟着结果一起收起，避免出现没有归属的散装域名。
+        const excludedList = this.querySelector<HTMLElement>('.recent-excluded-list');
+        if (excludedList) excludedList.hidden = true;
         let total = 0;
         this.querySelectorAll<HTMLElement>('.settings-pane').forEach((paneElement) => {
             let paneMatches = 0;
@@ -486,6 +501,14 @@ export class SettingsPanel extends StoreElement {
             restore.disabled = !layout.recentExcluded.length;
             restore.closest('.setting-row')?.querySelector('.row-sub')
                 ?.replaceChildren(`在常访问站点上右键“从常访问移除”会隐藏在这里，共 ${layout.recentExcluded.length} 个`);
+        }
+        const excludedList = this.querySelector<HTMLElement>('.recent-excluded-list');
+        const excludedKey = layout.recentExcluded.join('\u0000');
+        if (excludedList && excludedKey !== this.excludedKey) {
+            this.excludedKey = excludedKey;
+            renderRecentExcluded(excludedList, layout.recentExcluded);
+            // 正在搜索时不要因为数据刷新把标签列表弹回来。
+            if (this.querySelector<HTMLInputElement>('.settings-search input')?.value.trim()) excludedList.hidden = true;
         }
         if (this.openState) void this.refreshPreview();
     }
@@ -779,6 +802,35 @@ function depends(on: string): string {
 
 function infoRow(label: string, sub: string, control: string): string {
     return `<div class="setting-row">${rowLabel(label, sub)}${control}</div>`;
+}
+
+/** 隐藏名单：标题行放「恢复全部」，下面每个域名一个可单独恢复的标签。 */
+function recentExcludedRow(excluded: string[]): string {
+    return `
+        <div class="setting-row recent-excluded-row">
+            ${rowLabel('隐藏的常访问站点', `在常访问站点上右键“从常访问移除”会隐藏在这里，共 ${excluded.length} 个`)}
+            <button class="pill-button restore-recent" type="button" data-liquid-item${excluded.length ? '' : ' disabled'}>恢复全部</button>
+        </div>
+        <div class="recent-excluded-list"${excluded.length ? '' : ' hidden'}></div>`;
+}
+
+/** 逐个生成域名标签；用 DOM 节点写入域名，避免域名里的特殊字符被当成 HTML。 */
+function renderRecentExcluded(list: HTMLElement, excluded: string[]): void {
+    list.hidden = !excluded.length;
+    list.replaceChildren(...excluded.map((host) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'recent-excluded-chip';
+        chip.dataset.recentHost = host;
+        chip.title = `点一下恢复 ${host}`;
+        chip.setAttribute('aria-label', `恢复 ${host}`);
+        const name = document.createElement('span');
+        name.className = 'chip-host';
+        name.textContent = host;
+        chip.append(name);
+        chip.insertAdjacentHTML('beforeend', ICONS.close);
+        return chip;
+    }));
 }
 
 function segmentRow(name: string, label: string, value: string, options: Option[], sub = '', dependsOn = ''): string {

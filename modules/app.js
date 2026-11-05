@@ -599,6 +599,17 @@
           }, ["settings"], ["settings.layout"]);
           return true;
         }
+        /** 把单个站点从屏蔽名单中移除（恢复显示），返回是否成功。 */
+        async restoreRecentSite(host) {
+          const value = String(host ?? "").trim().toLowerCase();
+          if (!value) return false;
+          const current = this.stateValue.settings.layout.recentExcluded;
+          if (!current.includes(value)) return false;
+          await this.commit((draft) => {
+            draft.settings.layout.recentExcluded = current.filter((item) => item !== value);
+          }, ["settings"], ["settings.layout"]);
+          return true;
+        }
         /** 清掉整个屏蔽名单，返回恢复了几个站点。 */
         async restoreRecentSites() {
           const count = this.stateValue.settings.layout.recentExcluded.length;
@@ -1805,7 +1816,7 @@
         if (!["http:", "https:"].includes(url.protocol)) return;
         const hostname = url.hostname.toLowerCase();
         const bare = hostname.replace(/^www\./, "");
-        if (!bare || bare === "newtab" || /(^|\.)google\.[a-z.]+$/.test(bare)) return;
+        if (!bare || bare === "newtab" || /^google\.[a-z.]+$/.test(bare)) return;
         const host = url.port ? `${bare}:${url.port}` : bare;
         if (excluded.has(host)) return;
         const visits = Math.max(1, Number(item.visitCount) || 1);
@@ -4313,6 +4324,31 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
   function infoRow(label, sub, control) {
     return `<div class="setting-row">${rowLabel(label, sub)}${control}</div>`;
   }
+  function recentExcludedRow(excluded) {
+    return `
+        <div class="setting-row recent-excluded-row">
+            ${rowLabel("\u9690\u85CF\u7684\u5E38\u8BBF\u95EE\u7AD9\u70B9", `\u5728\u5E38\u8BBF\u95EE\u7AD9\u70B9\u4E0A\u53F3\u952E\u201C\u4ECE\u5E38\u8BBF\u95EE\u79FB\u9664\u201D\u4F1A\u9690\u85CF\u5728\u8FD9\u91CC\uFF0C\u5171 ${excluded.length} \u4E2A`)}
+            <button class="pill-button restore-recent" type="button" data-liquid-item${excluded.length ? "" : " disabled"}>\u6062\u590D\u5168\u90E8</button>
+        </div>
+        <div class="recent-excluded-list"${excluded.length ? "" : " hidden"}></div>`;
+  }
+  function renderRecentExcluded(list, excluded) {
+    list.hidden = !excluded.length;
+    list.replaceChildren(...excluded.map((host) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "recent-excluded-chip";
+      chip.dataset.recentHost = host;
+      chip.title = `\u70B9\u4E00\u4E0B\u6062\u590D ${host}`;
+      chip.setAttribute("aria-label", `\u6062\u590D ${host}`);
+      const name = document.createElement("span");
+      name.className = "chip-host";
+      name.textContent = host;
+      chip.append(name);
+      chip.insertAdjacentHTML("beforeend", ICONS.close);
+      return chip;
+    }));
+  }
   function segmentRow(name, label, value, options, sub = "", dependsOn = "") {
     return `
         <div class="setting-row segment-row" ${depends(dependsOn)}>
@@ -4398,6 +4434,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         releaseLayer = null;
         previewUrl = "";
         previewToken = 0;
+        excludedKey = "\0unset";
         open(pane2) {
           if (pane2) this.selectPane(pane2);
           if (this.openState) return;
@@ -4429,6 +4466,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         }
         render() {
           const settings = appStore.state.settings;
+          this.excludedKey = "\0unset";
           this.innerHTML = `
             <div class="settings-scrim" aria-hidden="true"></div>
             <section class="glass glass-window settings-window" role="dialog" aria-modal="true" aria-label="\u8BBE\u7F6E" aria-hidden="true" inert>
@@ -4492,7 +4530,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 ${rangeRow("dockSize", "\u56FE\u6807\u5927\u5C0F", layout.dockSize, 40, 72, "", "showBookmarks")}
                 ${toggleRow("dockMagnify", "\u60AC\u505C\u653E\u5927", "", "showBookmarks")}
                 ${toggleRow("openInNewTab", "\u5728\u65B0\u6807\u7B7E\u9875\u6253\u5F00\u4E66\u7B7E")}
-                ${infoRow("\u9690\u85CF\u7684\u5E38\u8BBF\u95EE\u7AD9\u70B9", `\u5728\u5E38\u8BBF\u95EE\u7AD9\u70B9\u4E0A\u53F3\u952E\u201C\u4ECE\u5E38\u8BBF\u95EE\u79FB\u9664\u201D\u4F1A\u9690\u85CF\u5728\u8FD9\u91CC\uFF0C\u5171 ${layout.recentExcluded.length} \u4E2A`, `<button class="pill-button restore-recent" type="button" data-liquid-item${layout.recentExcluded.length ? "" : " disabled"}>\u6062\u590D\u5168\u90E8</button>`)}
+                ${recentExcludedRow(layout.recentExcluded)}
             `)}
             ${group("\u641C\u7D22", `
                 ${segmentRow("searchEngine", "\u9ED8\u8BA4\u641C\u7D22\u5F15\u64CE", layout.searchEngine, Object.entries(ENGINES).map(([key, engine]) => [key, engine.label]))}
@@ -4654,6 +4692,14 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
               if (count) notify(`\u5DF2\u6062\u590D ${count} \u4E2A\u5E38\u8BBF\u95EE\u7AD9\u70B9`);
             }).catch(notifyError);
           });
+          this.querySelector(".recent-excluded-list")?.addEventListener("click", (event) => {
+            const chip = event.target.closest(".recent-excluded-chip");
+            const host = chip?.dataset.recentHost;
+            if (!host) return;
+            void appStore.restoreRecentSite(host).then((done) => {
+              if (done) notify(`\u5DF2\u6062\u590D ${host}`);
+            }).catch(notifyError);
+          });
           this.querySelector(".export-data")?.addEventListener("click", () => void backupService.createBackup().catch(notifyError));
           this.querySelector(".import-data input")?.addEventListener("change", (event) => {
             const input = event.target;
@@ -4699,6 +4745,8 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             this.querySelectorAll(".setting-row, .settings-group, .settings-heading").forEach((element) => {
               element.hidden = false;
             });
+            const list = this.querySelector(".recent-excluded-list");
+            if (list) list.hidden = !list.childElementCount;
             this.querySelector(".settings-empty").hidden = true;
             this.selectPane(this.activePane);
             return;
@@ -4707,6 +4755,8 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             button.classList.remove("is-active");
             button.removeAttribute("aria-current");
           });
+          const excludedList = this.querySelector(".recent-excluded-list");
+          if (excludedList) excludedList.hidden = true;
           let total = 0;
           this.querySelectorAll(".settings-pane").forEach((paneElement) => {
             let paneMatches = 0;
@@ -4808,6 +4858,13 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           if (restore) {
             restore.disabled = !layout.recentExcluded.length;
             restore.closest(".setting-row")?.querySelector(".row-sub")?.replaceChildren(`\u5728\u5E38\u8BBF\u95EE\u7AD9\u70B9\u4E0A\u53F3\u952E\u201C\u4ECE\u5E38\u8BBF\u95EE\u79FB\u9664\u201D\u4F1A\u9690\u85CF\u5728\u8FD9\u91CC\uFF0C\u5171 ${layout.recentExcluded.length} \u4E2A`);
+          }
+          const excludedList = this.querySelector(".recent-excluded-list");
+          const excludedKey = layout.recentExcluded.join("\0");
+          if (excludedList && excludedKey !== this.excludedKey) {
+            this.excludedKey = excludedKey;
+            renderRecentExcluded(excludedList, layout.recentExcluded);
+            if (this.querySelector(".settings-search input")?.value.trim()) excludedList.hidden = true;
           }
           if (this.openState) void this.refreshPreview();
         }

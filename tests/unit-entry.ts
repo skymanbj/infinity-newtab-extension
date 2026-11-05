@@ -175,6 +175,16 @@ assert.equal(ranked[0].title, 'YouTube', '首页标题可用时应作为网站�
 assert.equal(ranked[1].title, 'v2ex.com', '没有首页标题时显示完整域名，而不是只取第一段');
 assert.equal(rankSites([{ url: 'https://news.ycombinator.com/item?id=1', visitCount: 3 }])[0].title, 'news.ycombinator.com');
 
+// 只挡 google 搜索页，子应用（Gmail、日历）要照常进「常访问」。
+const googleSites = rankSites([
+    { url: 'https://www.google.com/search?q=gmail', visitCount: 40, lastVisitTime: 500 },
+    { url: 'https://mail.google.com/mail/u/0/#inbox', title: 'Gmail', visitCount: 12, lastVisitTime: 400 },
+    { url: 'https://calendar.google.com/calendar/u/0/r', title: 'Google 日历', visitCount: 3, lastVisitTime: 300 }
+]);
+assert.equal(googleSites.length, 2, 'google.com 搜索页必须被挡掉，mail/calendar 子域名必须保留');
+assert.deepEqual(googleSites.map((site) => site.host).sort(), ['calendar.google.com', 'mail.google.com']);
+assert.equal(googleSites.find((site) => site.host === 'mail.google.com')?.url, 'https://mail.google.com/');
+
 const localSites = rankSites([
     { url: 'http://localhost:18923/#/dashboard', title: '本地面板', visitCount: 6, lastVisitTime: 200 },
     { url: 'http://localhost:3000/', title: 'Vite', visitCount: 3, lastVisitTime: 100 },

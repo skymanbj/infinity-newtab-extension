@@ -1717,6 +1717,58 @@ label.setting-row {
     white-space: nowrap;
 }
 
+/* 隐藏的常访问站点：每个域名一枚标签，点一下单独恢复。 */
+.recent-excluded-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0 16px 14px;
+}
+
+.recent-excluded-list[hidden] {
+    display: none;
+}
+
+.recent-excluded-chip {
+    display: inline-flex;
+    max-width: 100%;
+    height: 28px;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    border-radius: 999px;
+    background: var(--fill-3);
+    color: var(--fg);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 160ms ease, transform 120ms ease;
+}
+
+.recent-excluded-chip:hover {
+    background: var(--fill-hover);
+}
+
+.recent-excluded-chip:active {
+    transform: scale(0.96);
+}
+
+.recent-excluded-chip .chip-host {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.recent-excluded-chip .icon {
+    width: 12px;
+    height: 12px;
+    flex: none;
+    opacity: 0.55;
+}
+
+.recent-excluded-chip:hover .icon {
+    opacity: 0.9;
+}
+
 .settings-window .segmented {
     padding: 2px;
     border-radius: 9px;

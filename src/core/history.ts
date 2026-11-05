@@ -15,7 +15,8 @@ export function rankSites(items: Array<Record<string, unknown>>, excluded: Reado
             if (!['http:', 'https:'].includes(url.protocol)) return;
             const hostname = url.hostname.toLowerCase();
             const bare = hostname.replace(/^www\./, '');
-            if (!bare || bare === 'newtab' || /(^|\.)google\.[a-z.]+$/.test(bare)) return;
+            // Hide the Google search homepage only; subdomains like mail.google.com stay visible.
+            if (!bare || bare === 'newtab' || /^google\.[a-z.]+$/.test(bare)) return;
             // The port is part of the site: localhost:18923 and localhost:3000 are different services.
             const host = url.port ? `${bare}:${url.port}` : bare;
             if (excluded.has(host)) return;

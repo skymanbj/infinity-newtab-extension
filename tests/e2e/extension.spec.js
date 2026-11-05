@@ -1099,9 +1099,22 @@ test('removes a frequent site from 常访问 and restores it in settings', async
 
     await page.locator('.launchpad-done').click();
     await openSettings(page, 'widgets');
+
+    // 隐藏名单列出具体域名，可以单独恢复其中一个。
+    const chips = page.locator('.recent-excluded-chip');
+    await expect(chips).toHaveCount(2);
+    await expect(chips.nth(0)).toHaveText('youtube.com');
+    await expect(chips.nth(1)).toHaveText('v2ex.com');
+    await chips.nth(0).click();
+    await expect(chips).toHaveCount(1);
+    await expect(chips.nth(0)).toHaveText('v2ex.com');
+    expect((await page.evaluate(() => window.__readMockSync())).settings.layout.recentExcluded).toEqual(['v2ex.com']);
+    await expect(page.locator('.settings-pane[data-pane="widgets"]').locator('.row-sub', { hasText: '共 1 个' })).toBeVisible();
+
     await expect(page.locator('.restore-recent')).toBeEnabled();
     await page.locator('.restore-recent').click();
     await expect(page.locator('.restore-recent')).toBeDisabled();
+    await expect(page.locator('.recent-excluded-chip')).toHaveCount(0);
     await expect(page.locator('.settings-pane[data-pane="widgets"]').locator('.row-sub', { hasText: '共 0 个' })).toBeVisible();
     expect((await page.evaluate(() => window.__readMockSync())).settings.layout.recentExcluded).toEqual([]);
     await page.keyboard.press('Escape');

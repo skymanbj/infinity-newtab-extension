@@ -105,6 +105,18 @@ export class AppStore extends EventTarget {
         return true;
     }
 
+    /** 把单个站点从屏蔽名单中移除（恢复显示），返回是否成功。 */
+    async restoreRecentSite(host: string): Promise<boolean> {
+        const value = String(host ?? '').trim().toLowerCase();
+        if (!value) return false;
+        const current = this.stateValue.settings.layout.recentExcluded;
+        if (!current.includes(value)) return false;
+        await this.commit((draft) => {
+            draft.settings.layout.recentExcluded = current.filter((item) => item !== value);
+        }, ['settings'], ['settings.layout']);
+        return true;
+    }
+
     /** 清掉整个屏蔽名单，返回恢复了几个站点。 */
     async restoreRecentSites(): Promise<number> {
         const count = this.stateValue.settings.layout.recentExcluded.length;
