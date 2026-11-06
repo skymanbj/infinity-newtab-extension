@@ -1601,6 +1601,9 @@
         grid: solid('<rect x="4" y="4" width="4" height="4" rx="1.2"></rect><rect x="10" y="4" width="4" height="4" rx="1.2"></rect><rect x="16" y="4" width="4" height="4" rx="1.2"></rect><rect x="4" y="10" width="4" height="4" rx="1.2"></rect><rect x="10" y="10" width="4" height="4" rx="1.2"></rect><rect x="16" y="10" width="4" height="4" rx="1.2"></rect><rect x="4" y="16" width="4" height="4" rx="1.2"></rect><rect x="10" y="16" width="4" height="4" rx="1.2"></rect><rect x="16" y="16" width="4" height="4" rx="1.2"></rect>'),
         look: icon('<circle cx="12" cy="12" r="8"></circle><path class="icon-fill" d="M12 4a8 8 0 0 0 0 16z"></path>'),
         widgets: solid('<rect x="4" y="4" width="7" height="7" rx="2"></rect><rect x="13" y="4" width="7" height="7" rx="2"></rect><rect x="4" y="13" width="7" height="7" rx="2"></rect><rect x="13" y="13" width="7" height="7" rx="2"></rect>'),
+        dock: icon('<rect x="2.5" y="8" width="19" height="9" rx="3.2"></rect><circle class="icon-fill" cx="7.5" cy="12.5" r="1.5"></circle><circle class="icon-fill" cx="12" cy="12.5" r="1.5"></circle><circle class="icon-fill" cx="16.5" cy="12.5" r="1.5"></circle>'),
+        fullscreen: icon('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"></path>'),
+        exitFullscreen: icon('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"></path>'),
         wallpaper: icon('<rect x="3" y="5" width="18" height="14" rx="3"></rect><path class="icon-fill" d="M10 9.5v5l4.5-2.5z"></path>'),
         database: icon('<ellipse cx="12" cy="6" rx="7" ry="2.5"></ellipse><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"></path>'),
         close: icon('<path d="M6 6l12 12M18 6 6 18"></path>')
@@ -4424,6 +4427,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
       PANES = [
         ["appearance", "\u5916\u89C2", ICONS.look, "#0a84ff"],
         ["widgets", "\u7EC4\u4EF6", ICONS.widgets, "#ff9f0a"],
+        ["dock", "Dock", ICONS.dock, "#5e5ce6"],
         ["wallpaper", "\u58C1\u7EB8", ICONS.wallpaper, "#30b0c7"],
         ["data", "\u6570\u636E", ICONS.database, "#8e8e93"]
       ];
@@ -4490,6 +4494,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 <div class="settings-content">
                     ${this.appearancePane(settings)}
                     ${this.widgetsPane(settings)}
+                    ${this.dockPane(settings)}
                     ${this.wallpaperPane(settings)}
                     ${this.dataPane(settings)}
                     <p class="settings-empty" hidden></p>
@@ -4521,16 +4526,8 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             ${group("", `
                 ${toggleRow("showClock", "\u65F6\u95F4\u4E0E\u65E5\u671F")}
                 ${toggleRow("showSearch", "\u641C\u7D22\u680F", `\u5173\u95ED\u540E\u4ECD\u53EF\u7528 ${SHORTCUT_LABEL} \u547C\u51FA`)}
-                ${toggleRow("showBookmarks", "Dock")}
                 ${toggleRow("showStatus", "\u72B6\u6001\u80F6\u56CA", "\u53EA\u5728\u64AD\u653E\u5A92\u4F53\u3001\u4E0B\u8F7D\u6216\u4F7F\u7528\u7535\u6C60\u65F6\u51FA\u73B0")}
                 ${toggleRow("showRecent", "\u5E38\u8BBF\u95EE\u7F51\u7AD9", "\u6839\u636E\u672C\u673A\u6700\u8FD1 30 \u5929\u7684\u6D4F\u89C8\u8BB0\u5F55\u751F\u6210\uFF0C\u51FA\u73B0\u5728 Dock\u3001\u542F\u52A8\u53F0\u548C\u641C\u7D22\u4E2D")}
-            `)}
-            ${group("Dock", `
-                ${segmentRow("dockSource", "Dock \u663E\u793A", layout.dockSource, [["recent", "\u5E38\u8BBF\u95EE"], ["bookmarks", "\u56FA\u5B9A\u7684\u4E66\u7B7E"]], "\u5E38\u8BBF\u95EE\u53D6\u6700\u8FD1 30 \u5929\u6D4F\u89C8\u6700\u591A\u7684\u7F51\u7AD9\uFF1B\u56FA\u5B9A\u7684\u4E66\u7B7E\u5C31\u662F\u201C\u5168\u90E8\u201D\u91CC\u7684\u4E66\u7B7E\uFF0C\u53EF\u5728\u542F\u52A8\u53F0\u4E2D\u62D6\u52A8\u6392\u5E8F", "showBookmarks showRecent")}
-                ${rangeRow("dockSize", "\u56FE\u6807\u5927\u5C0F", layout.dockSize, 40, 72, "", "showBookmarks")}
-                ${toggleRow("dockMagnify", "\u60AC\u505C\u653E\u5927", "", "showBookmarks")}
-                ${toggleRow("openInNewTab", "\u5728\u65B0\u6807\u7B7E\u9875\u6253\u5F00\u4E66\u7B7E")}
-                ${recentExcludedRow(layout.recentExcluded)}
             `)}
             ${group("\u641C\u7D22", `
                 ${segmentRow("searchEngine", "\u9ED8\u8BA4\u641C\u7D22\u5F15\u64CE", layout.searchEngine, Object.entries(ENGINES).map(([key, engine]) => [key, engine.label]))}
@@ -4540,6 +4537,22 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 ${rangeRow("launchpadColumns", "\u6BCF\u884C\u56FE\u6807\u6570", layout.launchpadColumns, 0, 14, "", "", "0 \u4E3A\u81EA\u52A8\uFF1A\u6309\u7A97\u53E3\u5BBD\u5EA6\u94FA\u6EE1", "\u81EA\u52A8")}
                 ${rangeRow("launchpadRows", "\u4E00\u5C4F\u884C\u6570", layout.launchpadRows, 0, 8, "", "", "0 \u4E3A\u81EA\u52A8\uFF1A\u4E66\u7B7E\u591A\u4E86\u5C31\u5F80\u4E0B\u6EDA", "\u81EA\u52A8")}
                 ${rangeRow("launchpadTile", "\u56FE\u6807\u5C3A\u5BF8", layout.launchpadTile, 64, 140, "px", "", "\u56FE\u6807\u4E0E\u540D\u79F0\u4E00\u8D77\u7F29\u653E")}
+            `)}
+        `);
+        }
+        dockPane({ layout }) {
+          return pane("dock", "Dock", `
+            ${group("", `
+                ${toggleRow("showBookmarks", "\u663E\u793A Dock")}
+                ${segmentRow("dockSource", "Dock \u663E\u793A", layout.dockSource, [["recent", "\u5E38\u8BBF\u95EE"], ["bookmarks", "\u56FA\u5B9A\u7684\u4E66\u7B7E"]], "\u5E38\u8BBF\u95EE\u53D6\u6700\u8FD1 30 \u5929\u6D4F\u89C8\u6700\u591A\u7684\u7F51\u7AD9\uFF1B\u56FA\u5B9A\u7684\u4E66\u7B7E\u5C31\u662F\u201C\u5168\u90E8\u201D\u91CC\u7684\u4E66\u7B7E\uFF0C\u53EF\u5728\u542F\u52A8\u53F0\u4E2D\u62D6\u52A8\u6392\u5E8F", "showBookmarks showRecent")}
+                ${rangeRow("dockSize", "\u56FE\u6807\u5927\u5C0F", layout.dockSize, 40, 72, "", "showBookmarks")}
+                ${toggleRow("dockMagnify", "\u60AC\u505C\u653E\u5927", "", "showBookmarks")}
+            `)}
+            ${group("\u6253\u5F00\u65B9\u5F0F", `
+                ${toggleRow("openInNewTab", "\u5728\u65B0\u6807\u7B7E\u9875\u6253\u5F00\u4E66\u7B7E")}
+            `)}
+            ${group("\u5E38\u8BBF\u95EE", `
+                ${recentExcludedRow(layout.recentExcluded)}
             `)}
         `);
         }
@@ -5583,6 +5596,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             this.updateClasses();
             appStore.addEventListener("change", this.onStoreChange);
             this.hdrMedia.addEventListener("change", this.updateClasses);
+            document.addEventListener("fullscreenchange", this.onFullscreenChange);
             this.render();
             window.addEventListener("keydown", this.onKeyDown);
             ["pointermove", "pointerdown", "keydown", "wheel", "focusin"].forEach((type) => {
@@ -5597,12 +5611,21 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         disconnectedCallback() {
           appStore.removeEventListener("change", this.onStoreChange);
           this.hdrMedia.removeEventListener("change", this.updateClasses);
+          document.removeEventListener("fullscreenchange", this.onFullscreenChange);
           window.removeEventListener("keydown", this.onKeyDown);
           ["pointermove", "pointerdown", "keydown", "wheel", "focusin"].forEach((type) => {
             window.removeEventListener(type, this.wake, true);
           });
           window.clearTimeout(this.idleTimer);
         }
+        onFullscreenChange = () => {
+          const btn = this.querySelector(".fullscreen-toggle");
+          if (!btn) return;
+          const isFull = Boolean(document.fullscreenElement);
+          btn.innerHTML = isFull ? ICONS.exitFullscreen : ICONS.fullscreen;
+          btn.title = isFull ? "\u9000\u51FA\u5168\u5C4F" : "\u5168\u5C4F";
+          btn.setAttribute("aria-label", btn.title);
+        };
         hasHdrDisplay() {
           return this.hdrMedia.matches && CSS.supports("dynamic-range-limit", "no-limit");
         }
@@ -5613,6 +5636,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 <header class="top-bar">
                     <status-strip></status-strip>
                     <div class="top-actions">
+                        <button class="glass round-button fullscreen-toggle" type="button" data-liquid-item aria-label="\u5168\u5C4F" title="\u5168\u5C4F">${ICONS.fullscreen}</button>
                         <button class="glass round-button shuffle-wallpaper" type="button" data-liquid-item aria-label="\u6362\u4E00\u5F20\u98CE\u5149\u58C1\u7EB8" title="\u6362\u4E00\u5F20\u98CE\u5149\u58C1\u7EB8">${ICONS.sparkle}</button>
                         <button class="glass round-button settings-trigger" type="button" data-liquid-item aria-label="\u8BBE\u7F6E" title="\u8BBE\u7F6E">${ICONS.settings}</button>
                     </div>
@@ -5631,6 +5655,16 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             <backup-toast></backup-toast>
             <liquid-glass-system></liquid-glass-system>
         `;
+          this.onFullscreenChange();
+          this.querySelector(".fullscreen-toggle")?.addEventListener("click", () => {
+            if (!document.fullscreenElement) {
+              document.documentElement.requestFullscreen().catch(() => {
+              });
+            } else {
+              document.exitFullscreen().catch(() => {
+              });
+            }
+          });
           this.querySelector(".settings-trigger")?.addEventListener("click", () => this.settings?.open());
           this.querySelector(".shuffle-wallpaper")?.addEventListener("click", (event) => void this.shuffleWallpaper(event.currentTarget));
           this.addEventListener("wallpaper-error", this.onWallpaperError);

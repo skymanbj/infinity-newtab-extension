@@ -555,6 +555,8 @@ test('persists layout, theme and local wallpaper controls', async ({ page }) => 
     expect(settingsLayout.overflowFree).toBe(true);
     await page.locator('input[data-toggle="showStatus"]').uncheck();
     await expect(page.locator('status-strip')).toBeHidden();
+
+    await page.locator('.settings-nav-item[data-pane="dock"]').click();
     await page.locator('input[data-toggle="showBookmarks"]').uncheck();
     await expect(page.locator('.setting-row[data-depends="showBookmarks"]').first()).toHaveClass(/is-disabled/);
     await expect(page.locator('home-dock')).toBeHidden();
@@ -1066,8 +1068,9 @@ test('keeps history out of every view when frequent sites are turned off', async
     await page.keyboard.press('Escape');
 
     await openSettings(page, 'widgets');
-    await expect(page.locator('[data-segment="dockSource"]').locator('xpath=ancestor::*[contains(@class,"setting-row")]')).toHaveClass(/is-disabled/);
     await page.locator('input[data-toggle="showRecent"]').check();
+    await page.locator('.settings-nav-item[data-pane="dock"]').click();
+    await expect(page.locator('[data-segment="dockSource"]').locator('xpath=ancestor::*[contains(@class,"setting-row")]')).not.toHaveClass(/is-disabled/);
     await expect(page.locator('.dock-item[data-site-index]')).toHaveCount(2);
     await expect(page.locator('.dock-recent')).toHaveCount(1);
     expect((await page.evaluate(() => window.__readMockSync())).settings.layout.showRecent).toBe(true);
@@ -1098,7 +1101,7 @@ test('removes a frequent site from 常访问 and restores it in settings', async
     expect((await page.evaluate(() => window.__readMockSync())).settings.layout.recentExcluded).toEqual(['youtube.com', 'v2ex.com']);
 
     await page.locator('.launchpad-done').click();
-    await openSettings(page, 'widgets');
+    await openSettings(page, 'dock');
 
     // 隐藏名单列出具体域名，可以单独恢复其中一个。
     const chips = page.locator('.recent-excluded-chip');
@@ -1109,13 +1112,13 @@ test('removes a frequent site from 常访问 and restores it in settings', async
     await expect(chips).toHaveCount(1);
     await expect(chips.nth(0)).toHaveText('v2ex.com');
     expect((await page.evaluate(() => window.__readMockSync())).settings.layout.recentExcluded).toEqual(['v2ex.com']);
-    await expect(page.locator('.settings-pane[data-pane="widgets"]').locator('.row-sub', { hasText: '共 1 个' })).toBeVisible();
+    await expect(page.locator('.settings-pane[data-pane="dock"]').locator('.row-sub', { hasText: '共 1 个' })).toBeVisible();
 
     await expect(page.locator('.restore-recent')).toBeEnabled();
     await page.locator('.restore-recent').click();
     await expect(page.locator('.restore-recent')).toBeDisabled();
     await expect(page.locator('.recent-excluded-chip')).toHaveCount(0);
-    await expect(page.locator('.settings-pane[data-pane="widgets"]').locator('.row-sub', { hasText: '共 0 个' })).toBeVisible();
+    await expect(page.locator('.settings-pane[data-pane="dock"]').locator('.row-sub', { hasText: '共 0 个' })).toBeVisible();
     expect((await page.evaluate(() => window.__readMockSync())).settings.layout.recentExcluded).toEqual([]);
     await page.keyboard.press('Escape');
     await openLaunchpad(page, 'recent');
@@ -1455,5 +1458,31 @@ test('scrolls the launchpad grid from the empty side margins', async ({ page }) 
     await page.mouse.move(tile.x + tile.width / 2, tile.y + tile.height / 2);
     await page.mouse.wheel(0, 300);
     await expect.poll(() => grid.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+    expect(errors).toEqual([]);
+});
+
+test('provides a fullscreen toggle in top actions', async ({ page }) => {
+    const errors = await openExtension(page);
+    const button = page.locator('.fullscreen-toggle');
+    await expect(button).toBeVisible();
+    await expect(button).toHaveAttribute('title', '全屏');
+
+    await page.evaluate(() => {
+        Object.defineProperty(document, 'fullscreenElement', {
+            configurable: true,
+            get: () => document.documentElement
+        });
+        document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    await expect(button).toHaveAttribute('title', '退出全屏');
+
+    await page.evaluate(() => {
+        Object.defineProperty(document, 'fullscreenElement', {
+            configurable: true,
+            get: () => null
+        });
+        document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    await expect(button).toHaveAttribute('title', '全屏');
     expect(errors).toEqual([]);
 });

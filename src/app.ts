@@ -58,6 +58,7 @@ class InfinityNewTabApp extends HTMLElement {
             this.updateClasses();
             appStore.addEventListener('change', this.onStoreChange);
             this.hdrMedia.addEventListener('change', this.updateClasses);
+            document.addEventListener('fullscreenchange', this.onFullscreenChange);
             this.render();
             window.addEventListener('keydown', this.onKeyDown);
             ['pointermove', 'pointerdown', 'keydown', 'wheel', 'focusin'].forEach((type) => {
@@ -73,12 +74,22 @@ class InfinityNewTabApp extends HTMLElement {
     disconnectedCallback(): void {
         appStore.removeEventListener('change', this.onStoreChange);
         this.hdrMedia.removeEventListener('change', this.updateClasses);
+        document.removeEventListener('fullscreenchange', this.onFullscreenChange);
         window.removeEventListener('keydown', this.onKeyDown);
         ['pointermove', 'pointerdown', 'keydown', 'wheel', 'focusin'].forEach((type) => {
             window.removeEventListener(type, this.wake, true);
         });
         window.clearTimeout(this.idleTimer);
     }
+
+    private onFullscreenChange = (): void => {
+        const btn = this.querySelector<HTMLButtonElement>('.fullscreen-toggle');
+        if (!btn) return;
+        const isFull = Boolean(document.fullscreenElement);
+        btn.innerHTML = isFull ? ICONS.exitFullscreen : ICONS.fullscreen;
+        btn.title = isFull ? '退出全屏' : '全屏';
+        btn.setAttribute('aria-label', btn.title);
+    };
 
     private hasHdrDisplay(): boolean {
         return this.hdrMedia.matches && CSS.supports('dynamic-range-limit', 'no-limit');
@@ -91,6 +102,7 @@ class InfinityNewTabApp extends HTMLElement {
                 <header class="top-bar">
                     <status-strip></status-strip>
                     <div class="top-actions">
+                        <button class="glass round-button fullscreen-toggle" type="button" data-liquid-item aria-label="全屏" title="全屏">${ICONS.fullscreen}</button>
                         <button class="glass round-button shuffle-wallpaper" type="button" data-liquid-item aria-label="换一张风光壁纸" title="换一张风光壁纸">${ICONS.sparkle}</button>
                         <button class="glass round-button settings-trigger" type="button" data-liquid-item aria-label="设置" title="设置">${ICONS.settings}</button>
                     </div>
@@ -109,6 +121,14 @@ class InfinityNewTabApp extends HTMLElement {
             <backup-toast></backup-toast>
             <liquid-glass-system></liquid-glass-system>
         `;
+        this.onFullscreenChange();
+        this.querySelector('.fullscreen-toggle')?.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(() => {});
+            } else {
+                document.exitFullscreen().catch(() => {});
+            }
+        });
         this.querySelector('.settings-trigger')?.addEventListener('click', () => this.settings?.open());
         this.querySelector('.shuffle-wallpaper')?.addEventListener('click', (event) => void this.shuffleWallpaper(event.currentTarget as HTMLButtonElement));
         this.addEventListener('wallpaper-error', this.onWallpaperError as EventListener);

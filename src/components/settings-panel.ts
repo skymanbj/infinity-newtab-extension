@@ -24,7 +24,7 @@ import { applyLaunchpadGrid } from './launchpad-grid';
 import { ENGINES, SHORTCUT_LABEL } from './spotlight-search';
 import { afterMotion, confirmAction, notify, notifyError, pushLayer } from './ui-layer';
 
-type Pane = 'appearance' | 'widgets' | 'wallpaper' | 'data';
+type Pane = 'appearance' | 'widgets' | 'dock' | 'wallpaper' | 'data';
 type Option = [value: string, label: string];
 
 /** 滑块改动落在哪个设置分区；没列出来的都是壁纸。 */
@@ -40,6 +40,7 @@ const RANGE_SECTIONS: Record<string, 'layout' | 'wallpaper'> = {
 const PANES: Array<[Pane, string, string, string]> = [
     ['appearance', '外观', ICONS.look, '#0a84ff'],
     ['widgets', '组件', ICONS.widgets, '#ff9f0a'],
+    ['dock', 'Dock', ICONS.dock, '#5e5ce6'],
     ['wallpaper', '壁纸', ICONS.wallpaper, '#30b0c7'],
     ['data', '数据', ICONS.database, '#8e8e93']
 ];
@@ -113,6 +114,7 @@ export class SettingsPanel extends StoreElement {
                 <div class="settings-content">
                     ${this.appearancePane(settings)}
                     ${this.widgetsPane(settings)}
+                    ${this.dockPane(settings)}
                     ${this.wallpaperPane(settings)}
                     ${this.dataPane(settings)}
                     <p class="settings-empty" hidden></p>
@@ -146,16 +148,8 @@ export class SettingsPanel extends StoreElement {
             ${group('', `
                 ${toggleRow('showClock', '时间与日期')}
                 ${toggleRow('showSearch', '搜索栏', `关闭后仍可用 ${SHORTCUT_LABEL} 呼出`)}
-                ${toggleRow('showBookmarks', 'Dock')}
                 ${toggleRow('showStatus', '状态胶囊', '只在播放媒体、下载或使用电池时出现')}
                 ${toggleRow('showRecent', '常访问网站', '根据本机最近 30 天的浏览记录生成，出现在 Dock、启动台和搜索中')}
-            `)}
-            ${group('Dock', `
-                ${segmentRow('dockSource', 'Dock 显示', layout.dockSource, [['recent', '常访问'], ['bookmarks', '固定的书签']], '常访问取最近 30 天浏览最多的网站；固定的书签就是“全部”里的书签，可在启动台中拖动排序', 'showBookmarks showRecent')}
-                ${rangeRow('dockSize', '图标大小', layout.dockSize, 40, 72, '', 'showBookmarks')}
-                ${toggleRow('dockMagnify', '悬停放大', '', 'showBookmarks')}
-                ${toggleRow('openInNewTab', '在新标签页打开书签')}
-                ${recentExcludedRow(layout.recentExcluded)}
             `)}
             ${group('搜索', `
                 ${segmentRow('searchEngine', '默认搜索引擎', layout.searchEngine, Object.entries(ENGINES).map(([key, engine]) => [key, engine.label] as Option))}
@@ -165,6 +159,23 @@ export class SettingsPanel extends StoreElement {
                 ${rangeRow('launchpadColumns', '每行图标数', layout.launchpadColumns, 0, 14, '', '', '0 为自动：按窗口宽度铺满', '自动')}
                 ${rangeRow('launchpadRows', '一屏行数', layout.launchpadRows, 0, 8, '', '', '0 为自动：书签多了就往下滚', '自动')}
                 ${rangeRow('launchpadTile', '图标尺寸', layout.launchpadTile, 64, 140, 'px', '', '图标与名称一起缩放')}
+            `)}
+        `);
+    }
+
+    private dockPane({ layout }: AppSettings): string {
+        return pane('dock', 'Dock', `
+            ${group('', `
+                ${toggleRow('showBookmarks', '显示 Dock')}
+                ${segmentRow('dockSource', 'Dock 显示', layout.dockSource, [['recent', '常访问'], ['bookmarks', '固定的书签']], '常访问取最近 30 天浏览最多的网站；固定的书签就是“全部”里的书签，可在启动台中拖动排序', 'showBookmarks showRecent')}
+                ${rangeRow('dockSize', '图标大小', layout.dockSize, 40, 72, '', 'showBookmarks')}
+                ${toggleRow('dockMagnify', '悬停放大', '', 'showBookmarks')}
+            `)}
+            ${group('打开方式', `
+                ${toggleRow('openInNewTab', '在新标签页打开书签')}
+            `)}
+            ${group('常访问', `
+                ${recentExcludedRow(layout.recentExcluded)}
             `)}
         `);
     }
