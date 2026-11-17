@@ -200,6 +200,7 @@
         value: sanitizeWallpaperValue(wallpaper.value),
         blur: clampNumber(wallpaper.blur, 0, 40, 0),
         overlay: clampNumber(wallpaper.overlay, 0, 60, 12),
+        framing: sanitizeFraming(wallpaper.framing),
         idleHide: booleanOr(wallpaper.idleHide, true),
         pauseOnBattery: booleanOr(wallpaper.pauseOnBattery, true),
         pauseWhenHidden: booleanOr(wallpaper.pauseWhenHidden, true),
@@ -255,6 +256,15 @@
     if (typeof value === "string" && (value === "" || /^(local|online)(-\d+)?$/.test(value))) return value;
     return sanitizeRemoteUrl(value, true);
   }
+  function sanitizeFraming(value) {
+    const source = isRecord(value) ? value : {};
+    const fallback = DEFAULT_SETTINGS.wallpaper.framing;
+    return {
+      scale: clampNumber(source.scale, 0.05, 5, fallback.scale),
+      x: clampNumber(source.x, 0, 1, fallback.x),
+      y: clampNumber(source.y, 0, 1, fallback.y)
+    };
+  }
   function hostList(value) {
     if (!Array.isArray(value)) return [];
     const result = [];
@@ -305,6 +315,7 @@
           value: "",
           blur: 0,
           overlay: 12,
+          framing: { scale: 1, x: 0.5, y: 0.5 },
           idleHide: true,
           pauseOnBattery: true,
           pauseWhenHidden: true,
@@ -1016,14 +1027,22 @@
     } catch {
     }
   }
+  function mediaKindOf(file) {
+    if (file.type.startsWith("video/") || !file.type && VIDEO_EXTENSIONS.test(file.name)) return "video";
+    if (file.type.startsWith("image/") || !file.type && (IMAGE_EXTENSIONS.test(file.name) || HEIC_EXTENSIONS.test(file.name))) return "image";
+    return null;
+  }
   async function useLocalWallpaper(file) {
-    const kind = file.type.startsWith("video/") ? "video" : file.type.startsWith("image/") ? "image" : null;
+    if (HEIC.test(file.type) || HEIC_EXTENSIONS.test(file.name)) {
+      throw new Error("Chrome \u65E0\u6CD5\u663E\u793A HEIC \u683C\u5F0F\u7684\u7167\u7247\u3002\u8BF7\u5728\u201C\u7167\u7247\u201D\u4E2D\u9009\u4E2D\u5B83\uFF0C\u6309 \u2318C \u590D\u5236\u540E\u5728\u8FD9\u91CC\u7C98\u8D34\uFF0C\u6216\u7528\u201C\u6587\u4EF6 \u2192 \u5BFC\u51FA\u201D\u5B58\u4E3A JPEG");
+    }
+    const kind = mediaKindOf(file);
     if (!kind) throw new Error("\u8BF7\u9009\u62E9\u56FE\u7247\u6216\u89C6\u9891\u6587\u4EF6");
     await validateLocalMedia(file, kind);
     await storeWallpaper(file, kind, "local");
   }
   async function resetWallpaper() {
-    await appStore.updateSettings("wallpaper", { type: "gradient", value: "", blur: 0, overlay: 30 });
+    await appStore.updateSettings("wallpaper", { type: "gradient", value: "", blur: 0, overlay: 12, framing: { scale: 1, x: 0.5, y: 0.5 } });
     await mediaStore.clearAll();
   }
   function wallpaperLabel(wallpaper) {
@@ -1038,7 +1057,8 @@
     try {
       await appStore.updateSettings("wallpaper", {
         type: kind === "video" ? "video" : "local",
-        value: `${source}-${Date.now()}`
+        value: `${source}-${Date.now()}`,
+        framing: { scale: 1, x: 0.5, y: 0.5 }
       });
     } catch (error) {
       try {
@@ -1050,22 +1070,73 @@
       throw error;
     }
   }
-  async function toneOfBlob(blob) {
-    const bitmap = await createImageBitmap(blob, { resizeWidth: SAMPLE_SIZE, resizeHeight: SAMPLE_SIZE });
-    try {
-      return toneOf(bitmap);
-    } finally {
-      bitmap.close();
+  function backdropOf(source) {
+    const data = sample(source);
+    if (!data) return DEFAULT_BACKDROP;
+    const ring = 4;
+    const corners = Array.from({ length: 4 }, () => ({ l: 0, a: 0, b: 0, n: 0 }));
+    const all = { l: 0, a: 0, b: 0, n: 0 };
+    for (let y = 0; y < SAMPLE_SIZE; y += 1) {
+      for (let x = 0; x < SAMPLE_SIZE; x += 1) {
+        if (x >= ring && x < SAMPLE_SIZE - ring && y >= ring && y < SAMPLE_SIZE - ring) continue;
+        const index = (y * SAMPLE_SIZE + x) * 4;
+        const [l, a, b] = oklab(data[index], data[index + 1], data[index + 2]);
+        const corner = corners[(y < SAMPLE_SIZE / 2 ? 0 : 2) + (x < SAMPLE_SIZE / 2 ? 0 : 1)];
+        for (const total of [corner, all]) {
+          total.l += l;
+          total.a += a;
+          total.b += b;
+          total.n += 1;
+        }
+      }
     }
+    const [topLeft, topRight, bottomLeft, bottomRight] = corners.map((corner) => paleTint(corner, 0.9, 0.06));
+    const base = paleTint(all, 0.955, 0.025);
+    return [
+      `radial-gradient(70% 70% at 0% 0%, ${topLeft}, transparent)`,
+      `radial-gradient(70% 70% at 100% 0%, ${topRight}, transparent)`,
+      `radial-gradient(70% 70% at 0% 100%, ${bottomLeft}, transparent)`,
+      `radial-gradient(70% 70% at 100% 100%, ${bottomRight}, transparent)`,
+      `linear-gradient(${base}, ${base})`
+    ].join(", ");
   }
-  function toneOf(source) {
+  function paleTint(total, lightness, maxChroma) {
+    if (!total.n) return `oklch(${lightness} 0 0)`;
+    const a = total.a / total.n;
+    const b = total.b / total.n;
+    const chroma = Math.min(maxChroma, Math.hypot(a, b) * 0.6);
+    const hue = (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
+    return `oklch(${lightness} ${chroma.toFixed(3)} ${hue.toFixed(1)})`;
+  }
+  function oklab(red, green, blue) {
+    const linear = (value) => {
+      const channel = value / 255;
+      return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    };
+    const r = linear(red);
+    const g = linear(green);
+    const b = linear(blue);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [
+      0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
+    ];
+  }
+  function sample(source) {
     const canvas = document.createElement("canvas");
     canvas.width = SAMPLE_SIZE;
     canvas.height = SAMPLE_SIZE;
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) return "dark";
+    if (!context) return null;
     context.drawImage(source, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE);
-    const { data } = context.getImageData(0, 0, SAMPLE_SIZE, SAMPLE_SIZE);
+    return context.getImageData(0, 0, SAMPLE_SIZE, SAMPLE_SIZE).data;
+  }
+  function toneOf(source) {
+    const data = sample(source);
+    if (!data) return "dark";
     let total = 0;
     for (let index = 0; index < data.length; index += 4) {
       total += (0.2126 * data[index] + 0.7152 * data[index + 1] + 0.0722 * data[index + 2]) / 255;
@@ -1123,7 +1194,7 @@
   function errorMessage(error) {
     return error instanceof Error ? error.message : "\u64CD\u4F5C\u5931\u8D25";
   }
-  var SAMPLE_SIZE, LIGHT_THRESHOLD;
+  var SAMPLE_SIZE, LIGHT_THRESHOLD, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, HEIC, HEIC_EXTENSIONS, SCENE_BACKDROP, DEFAULT_BACKDROP;
   var init_wallpaper_service = __esm({
     "src/core/wallpaper-service.ts"() {
       "use strict";
@@ -1133,6 +1204,18 @@
       init_wallpaper_bridge();
       SAMPLE_SIZE = 32;
       LIGHT_THRESHOLD = 0.58;
+      IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|avif|bmp|tiff?)$/i;
+      VIDEO_EXTENSIONS = /\.(mp4|m4v|mov|webm|ogv)$/i;
+      HEIC = /^image\/hei[cf]/i;
+      HEIC_EXTENSIONS = /\.hei[cf]$/i;
+      SCENE_BACKDROP = [
+        "radial-gradient(70% 70% at 0% 0%, oklch(0.9 0.045 275), transparent)",
+        "radial-gradient(70% 70% at 100% 0%, oklch(0.9 0.04 285), transparent)",
+        "radial-gradient(70% 70% at 0% 100%, oklch(0.9 0.05 320), transparent)",
+        "radial-gradient(70% 70% at 100% 100%, oklch(0.91 0.05 345), transparent)",
+        "linear-gradient(oklch(0.955 0.02 300), oklch(0.955 0.02 300))"
+      ].join(", ");
+      DEFAULT_BACKDROP = "linear-gradient(oklch(0.955 0.01 260), oklch(0.955 0.01 260))";
     }
   });
 
@@ -1293,14 +1376,14 @@
       document.body.append(backdrop);
       const form = backdrop.querySelector("form");
       const input = form.querySelector('input[name="value"]');
-      let release = () => {
+      let release2 = () => {
       };
       const finish = (value) => {
-        release();
+        release2();
         backdrop.remove();
         resolve(value);
       };
-      release = pushLayer(form, () => finish(null));
+      release2 = pushLayer(form, () => finish(null));
       form.querySelectorAll('[data-action="cancel"]').forEach((button) => button.addEventListener("click", () => finish(null)));
       backdrop.addEventListener("pointerdown", (event) => {
         if (event.target === backdrop) finish(null);
@@ -1363,19 +1446,19 @@
     const { width, height } = menu.getBoundingClientRect();
     menu.style.left = `${Math.max(8, Math.min(point.x, innerWidth - width - 8))}px`;
     menu.style.top = `${point.y + height > innerHeight - 8 ? Math.max(8, point.y - height - (anchor ? anchor.height + 12 : 0)) : point.y}px`;
-    let release = () => {
+    let release2 = () => {
     };
     const close = () => {
       document.removeEventListener("pointerdown", onOutside, true);
       window.removeEventListener("blur", close);
       window.removeEventListener("resize", close);
-      release();
+      release2();
       menu.remove();
     };
     const onOutside = (event) => {
       if (!menu.contains(event.target)) close();
     };
-    release = pushLayer(menu, close);
+    release2 = pushLayer(menu, close);
     menu.addEventListener("menu-close", close);
     document.addEventListener("pointerdown", onOutside, true);
     window.addEventListener("blur", close);
@@ -1802,9 +1885,9 @@
         close() {
           this.editing = void 0;
           this.innerHTML = "";
-          const release = this.releaseLayer;
+          const release2 = this.releaseLayer;
           this.releaseLayer = null;
-          release?.();
+          release2?.();
         }
       };
     }
@@ -2203,9 +2286,9 @@
           this.hidden = true;
           document.body.classList.remove("launchpad-open");
           this.innerHTML = "";
-          const release = this.releaseLayer;
+          const release2 = this.releaseLayer;
           this.releaseLayer = null;
-          release?.();
+          release2?.();
         }
         render() {
           if (!this.isOpen) return;
@@ -2870,8 +2953,8 @@
         if (!distance) continue;
         const antiAlias = distanceSquared < radiusSquared ? 1 : 1 - (distance - scaledRadius);
         const distanceFromBorder = scaledRadius - distance;
-        const sample = Math.floor(distanceFromBorder / scaledBezel * displacements.length);
-        const magnitude = displacements[sample] ?? 0;
+        const sample2 = Math.floor(distanceFromBorder / scaledBezel * displacements.length);
+        const magnitude = displacements[sample2] ?? 0;
         const normalizedX = -(offsetX / distance) * magnitude / maximumDisplacement;
         const normalizedY = -(offsetY / distance) * magnitude / maximumDisplacement;
         const index = (y * canvasWidth + x) * 4;
@@ -3532,12 +3615,12 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           const travel = Math.sqrt(distanceSquared);
           let width = lerp(from.width, to.width, progress);
           let height = lerp(from.height, to.height, progress);
-          const stretch = Math.min(72, travel * 0.27) * bridge;
+          const stretch2 = Math.min(72, travel * 0.27) * bridge;
           if (horizontal) {
-            width += stretch;
+            width += stretch2;
             height *= 1 - bridge * 0.11;
           } else {
-            height += stretch;
+            height += stretch2;
             width *= 1 - bridge * 0.11;
           }
           const centerX = lerp(fromCenter.x, toCenter.x, progress);
@@ -3914,9 +3997,9 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           if (!this.isOpen) return;
           this.hidden = true;
           document.body.classList.remove("spotlight-open");
-          const release = this.releaseLayer;
+          const release2 = this.releaseLayer;
           this.releaseLayer = null;
-          release?.();
+          release2?.();
         }
         get input() {
           return this.querySelector(".spotlight-field input");
@@ -4400,7 +4483,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     const total = Math.round(seconds);
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
   }
-  var RANGE_SECTIONS, PANES, SettingsPanel;
+  var PASTE_LABEL, RANGE_SECTIONS, PANES, SettingsPanel;
   var init_settings_panel = __esm({
     "src/components/settings-panel.ts"() {
       "use strict";
@@ -4416,6 +4499,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
       init_launchpad_grid();
       init_spotlight_search();
       init_ui_layer();
+      PASTE_LABEL = SHORTCUT_LABEL === "\u2318K" ? "\u2318V" : "Ctrl+V";
       RANGE_SECTIONS = {
         dockSize: "layout",
         launchpadColumns: "layout",
@@ -4439,6 +4523,10 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         previewUrl = "";
         previewToken = 0;
         excludedKey = "\0unset";
+        connectedCallback() {
+          super.connectedCallback();
+          document.addEventListener("paste", this.onPaste);
+        }
         open(pane2) {
           if (pane2) this.selectPane(pane2);
           if (this.openState) return;
@@ -4456,12 +4544,13 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           if (!this.openState) return;
           this.openState = false;
           this.syncOpenState();
-          const release = this.releaseLayer;
+          const release2 = this.releaseLayer;
           this.releaseLayer = null;
-          release?.();
+          release2?.();
         }
         disconnectedCallback() {
           super.disconnectedCallback();
+          document.removeEventListener("paste", this.onPaste);
           if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
         }
         handleStoreChange() {
@@ -4558,7 +4647,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         }
         wallpaperPane({ wallpaper }) {
           return pane("wallpaper", "\u58C1\u7EB8", `
-            <div class="settings-group wallpaper-card setting-row" data-search="\u58C1\u7EB8 \u89C6\u9891 \u56FE\u7247 \u5728\u7EBF \u9009\u62E9 \u6062\u590D\u9ED8\u8BA4">
+            <div class="settings-group wallpaper-card setting-row" data-search="\u58C1\u7EB8 \u89C6\u9891 \u56FE\u7247 \u7167\u7247 \u5728\u7EBF \u9009\u62E9 \u62D6\u653E \u7C98\u8D34 \u6062\u590D\u9ED8\u8BA4">
                 <div class="wallpaper-preview" aria-hidden="true"><div class="wallpaper-preview-media"></div><span class="wallpaper-duration" hidden></span></div>
                 <div class="wallpaper-info">
                     <strong class="wallpaper-name"></strong>
@@ -4568,6 +4657,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                         <button class="pill-button random-wallpaper" type="button" data-liquid-item>\u6362\u4E00\u5F20\u98CE\u5149\u58C1\u7EB8</button>
                         <button class="pill-button reset-wallpaper" type="button" data-liquid-item>\u6062\u590D\u9ED8\u8BA4</button>
                     </div>
+                    <span class="row-sub wallpaper-hint">\u4E5F\u53EF\u4EE5\u628A\u7167\u7247\u6216\u89C6\u9891\u62D6\u5230\u8FD9\u91CC\uFF0C\u6216\u590D\u5236\u540E\u6309 ${PASTE_LABEL} \u7C98\u8D34</span>
                 </div>
             </div>
             ${group("\u663E\u793A", `
@@ -4699,6 +4789,10 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             if (file) void this.withBusy(upload.closest("label"), () => useLocalWallpaper(file));
           });
           this.querySelector(".random-wallpaper")?.addEventListener("click", (event) => void this.withBusy(event.currentTarget, useOnlineWallpaper));
+          const windowElement = this.querySelector(".settings-window");
+          windowElement.addEventListener("dragover", this.onDragOver);
+          windowElement.addEventListener("dragleave", this.onDragLeave);
+          windowElement.addEventListener("drop", this.onDrop);
           this.querySelector(".reset-wallpaper")?.addEventListener("click", () => void resetWallpaper().catch(notifyError));
           this.querySelector(".restore-recent")?.addEventListener("click", () => {
             void appStore.restoreRecentSites().then((count) => {
@@ -4908,6 +5002,49 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           }
         }
         /** The type control is a shortcut: video and image open the file picker, online fetches a new picture. */
+        /** True while the wallpaper card is on screen (its pane, or a settings search that shows it). */
+        get wallpaperCardVisible() {
+          const card = this.querySelector(".wallpaper-card");
+          return this.openState && Boolean(card?.getClientRects().length);
+        }
+        useWallpaperFile(file) {
+          void this.withBusy(this.querySelector(".upload-wallpaper"), () => useLocalWallpaper(file));
+        }
+        /**
+         * Files dropped anywhere on the settings window are caught so Chrome does not
+         * navigate away to them; only the wallpaper pane takes the drop.
+         */
+        onDragOver = (event) => {
+          if (!event.dataTransfer?.types.includes("Files")) return;
+          event.preventDefault();
+          const accepts = this.wallpaperCardVisible && Boolean(event.target.closest('.settings-pane[data-pane="wallpaper"]'));
+          event.dataTransfer.dropEffect = accepts ? "copy" : "none";
+          this.querySelector(".wallpaper-card")?.classList.toggle("is-drop-target", accepts);
+        };
+        onDragLeave = (event) => {
+          const windowElement = this.querySelector(".settings-window");
+          if (windowElement?.contains(event.relatedTarget)) return;
+          this.querySelector(".wallpaper-card")?.classList.remove("is-drop-target");
+        };
+        onDrop = (event) => {
+          if (!event.dataTransfer?.types.includes("Files")) return;
+          event.preventDefault();
+          const card = this.querySelector(".wallpaper-card");
+          const accepts = card?.classList.contains("is-drop-target");
+          card?.classList.remove("is-drop-target");
+          if (!accepts) return;
+          const files = [...event.dataTransfer.files];
+          const file = files.find((item) => mediaKindOf(item)) ?? files[0];
+          if (file) this.useWallpaperFile(file);
+        };
+        /** A picture copied in Photos (⌘C) and pasted while the wallpaper card is on screen becomes the wallpaper. */
+        onPaste = (event) => {
+          if (!this.wallpaperCardVisible) return;
+          const file = [...event.clipboardData?.files ?? []].find((item) => mediaKindOf(item));
+          if (!file) return;
+          event.preventDefault();
+          this.useWallpaperFile(file);
+        };
         pickWallpaper(kind) {
           if (kind === "online") {
             void this.withBusy(this.querySelector(".random-wallpaper"), useOnlineWallpaper);
@@ -5291,6 +5428,288 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     }
   });
 
+  // src/components/wallpaper-framing.ts
+  function isDefault(framing) {
+    return Math.abs(framing.scale - 1) < 1e-3 && Math.abs(framing.x - 0.5) < 1e-3 && Math.abs(framing.y - 0.5) < 1e-3;
+  }
+  function sameFraming(left, right) {
+    return Math.abs(left.scale - right.scale) < 1e-3 && Math.abs(left.x - right.x) < 1e-3 && Math.abs(left.y - right.y) < 1e-3;
+  }
+  function clamp3(value, minimum, maximum) {
+    return Math.min(maximum, Math.max(minimum, value));
+  }
+  function round(value) {
+    return Math.round(value * 1e4) / 1e4;
+  }
+  function resist(value, delta, range, size) {
+    const outward = value >= range.max && delta > 0 || value <= range.min && delta < 0;
+    if (!outward) return delta;
+    const overshoot = value > range.max ? value - range.max : value < range.min ? range.min - value : 0;
+    return delta * 0.5 * Math.max(0, 1 - overshoot / (size * 0.3));
+  }
+  function rubberBand(requested, minimum) {
+    if (requested > MAX_SCALE) return MAX_SCALE * Math.exp(stretch(Math.log(requested / MAX_SCALE), STRETCH_OVER));
+    if (requested < minimum) return minimum * Math.exp(-stretch(Math.log(minimum / requested), STRETCH_UNDER));
+    return requested;
+  }
+  function unstretch(scale, minimum) {
+    if (scale > MAX_SCALE) return MAX_SCALE * Math.exp(release(Math.log(scale / MAX_SCALE), STRETCH_OVER));
+    if (scale < minimum) return minimum * Math.exp(-release(Math.log(minimum / scale), STRETCH_UNDER));
+    return scale;
+  }
+  function stretch(overshoot, limit) {
+    return limit * (1 - 1 / (overshoot / limit + 1));
+  }
+  function release(shown, limit) {
+    const ratio = Math.min(shown / limit, 0.999);
+    return limit * (1 / (1 - ratio) - 1);
+  }
+  function isControl(target) {
+    return target instanceof Element && Boolean(target.closest("a, button, input, label, select, textarea, [data-glass], bookmark-index, search-box, status-strip, dashboard-header, backup-toast, settings-panel, bookmark-dialog, .context-menu, .modal-backdrop"));
+  }
+  var MAX_SCALE, SNAP, PINCH_UNITS, MAX_PINCH_STEP, GESTURE_END_MS, STRETCH_OVER, STRETCH_UNDER, STIFFNESS, DAMPING, WallpaperFramer;
+  var init_wallpaper_framing = __esm({
+    "src/components/wallpaper-framing.ts"() {
+      "use strict";
+      init_ui_layer();
+      MAX_SCALE = 5;
+      SNAP = 0.05;
+      PINCH_UNITS = 100;
+      MAX_PINCH_STEP = 30;
+      GESTURE_END_MS = 140;
+      STRETCH_OVER = Math.log(1.35);
+      STRETCH_UNDER = Math.log(1 / 0.75);
+      STIFFNESS = 260;
+      DAMPING = 30;
+      WallpaperFramer = class {
+        constructor(surface, callbacks) {
+          this.surface = surface;
+          this.callbacks = callbacks;
+        }
+        surface;
+        callbacks;
+        view = { scale: 1, x: 0, y: 0 };
+        /** The scale the fingers ask for; the view shows it stretched by `rubberBand` past the limits. */
+        requestedScale = 1;
+        velocity = { scale: 0, x: 0, y: 0 };
+        target = null;
+        focus = { x: innerWidth / 2, y: innerHeight / 2 };
+        gestureTimer = 0;
+        frame = 0;
+        lastTime = 0;
+        interacting = false;
+        reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+        connect() {
+          window.addEventListener("wheel", this.onWheel, { passive: false, capture: true });
+          document.addEventListener("dblclick", this.onDoubleClick);
+        }
+        disconnect() {
+          window.removeEventListener("wheel", this.onWheel, true);
+          document.removeEventListener("dblclick", this.onDoubleClick);
+          this.stop();
+        }
+        /** True from the first pinch or scroll until the spring has settled. */
+        get busy() {
+          return this.interacting || this.target !== null;
+        }
+        /** The current framing in window-independent terms. */
+        get framing() {
+          const box = this.box();
+          return {
+            scale: round(this.view.scale),
+            x: round(clamp3((innerWidth / 2 - box.left - this.view.x) / (this.view.scale * box.width), 0, 1)),
+            y: round(clamp3((innerHeight / 2 - box.top - this.view.y) / (this.view.scale * box.height), 0, 1))
+          };
+        }
+        /** Shows a saved framing at once, fitted to the current window and picture. */
+        show(framing) {
+          this.stop();
+          const box = this.box();
+          const scale = clamp3(framing.scale, this.minScale(), MAX_SCALE);
+          this.view = this.clamped({
+            scale,
+            x: innerWidth / 2 - box.left - framing.x * scale * box.width,
+            y: innerHeight / 2 - box.top - framing.y * scale * box.height
+          });
+          this.apply();
+          this.callbacks.coverage(this.coverage());
+        }
+        get media() {
+          return this.surface.querySelector(".wallpaper-media");
+        }
+        onWheel = (event) => {
+          if (hasOpenLayer()) return;
+          const pinch = event.ctrlKey;
+          if (!pinch && (isControl(event.target) || !this.canPan())) return;
+          event.preventDefault();
+          event.stopPropagation();
+          this.beginGesture();
+          if (pinch) {
+            const step = clamp3(event.deltaY, -MAX_PINCH_STEP, MAX_PINCH_STEP);
+            this.focus = { x: event.clientX, y: event.clientY };
+            this.requestedScale *= Math.exp(-step / PINCH_UNITS);
+            this.view = this.zoomedAbout(this.view, rubberBand(this.requestedScale, this.minScale()), this.focus);
+          } else {
+            this.panBy(-event.deltaX, -event.deltaY);
+          }
+          this.apply();
+          this.gestureTimer = window.setTimeout(this.endGesture, GESTURE_END_MS);
+        };
+        /** Double-clicking an empty part of the screen returns to the default framing. */
+        onDoubleClick = (event) => {
+          if (hasOpenLayer() || isControl(event.target)) return;
+          if (isDefault(this.framing)) return;
+          this.settleTo({ scale: 1, x: 0, y: 0 });
+        };
+        /** Movement is possible on an axis where the picture is larger than the window, or while it is out of range. */
+        canPan() {
+          const [rangeX, rangeY] = this.ranges(this.view.scale);
+          const outside = (value, range) => value < range.min - 0.5 || value > range.max + 0.5;
+          return rangeX.max - rangeX.min > 1 || rangeY.max - rangeY.min > 1 || outside(this.view.x, rangeX) || outside(this.view.y, rangeY);
+        }
+        beginGesture() {
+          window.clearTimeout(this.gestureTimer);
+          cancelAnimationFrame(this.frame);
+          this.frame = 0;
+          this.target = null;
+          this.velocity = { scale: 0, x: 0, y: 0 };
+          this.requestedScale = unstretch(this.view.scale, this.minScale());
+          this.interacting = true;
+          this.surface.classList.add("is-framing");
+        }
+        endGesture = () => {
+          this.interacting = false;
+          const minimum = this.minScale();
+          let scale = clamp3(this.view.scale, minimum, MAX_SCALE);
+          if (Math.abs(scale - 1) < SNAP) scale = 1;
+          else if (scale / minimum - 1 < SNAP) scale = minimum;
+          this.settleTo(this.clamped(this.zoomedAbout(this.view, scale, this.focus)));
+        };
+        stop() {
+          window.clearTimeout(this.gestureTimer);
+          cancelAnimationFrame(this.frame);
+          this.frame = 0;
+          this.target = null;
+          this.interacting = false;
+          this.velocity = { scale: 0, x: 0, y: 0 };
+          this.surface.classList.remove("is-framing");
+        }
+        /** The view scaled to `scale` with the point under `at` staying put. */
+        zoomedAbout(view, scale, at) {
+          const box = this.box();
+          const ratio = scale / view.scale;
+          return {
+            scale,
+            x: at.x - box.left - (at.x - box.left - view.x) * ratio,
+            y: at.y - box.top - (at.y - box.top - view.y) * ratio
+          };
+        }
+        /** Panning past an edge moves less and less, so the picture resists being dragged out of view. */
+        panBy(dx, dy) {
+          const [rangeX, rangeY] = this.ranges(this.view.scale);
+          this.view = {
+            scale: this.view.scale,
+            x: this.view.x + resist(this.view.x, dx, rangeX, innerWidth),
+            y: this.view.y + resist(this.view.y, dy, rangeY, innerHeight)
+          };
+        }
+        /** The media layer's untransformed box in window coordinates. */
+        box() {
+          const media = this.media;
+          return media ? { left: media.offsetLeft, top: media.offsetTop, width: media.offsetWidth, height: media.offsetHeight } : { left: 0, top: 0, width: innerWidth, height: innerHeight };
+        }
+        /** The scale at which the whole picture fits in the window. */
+        minScale() {
+          const box = this.box();
+          return Math.min(1, innerWidth / box.width, innerHeight / box.height);
+        }
+        /**
+         * Allowed offsets on each axis at `scale`. A picture larger than the window
+         * (plus the blur margin, which must stay out of view) can move until an edge
+         * meets the window; a smaller one stays centred.
+         */
+        ranges(scale) {
+          const box = this.box();
+          const bleed = Number(this.surface.dataset.bleed) || 0;
+          const axis = (start, length, window2) => {
+            const size = length * scale;
+            if (size < window2 + bleed * 2) {
+              const centred = (window2 - size) / 2 - start;
+              return { min: centred, max: centred };
+            }
+            return { min: window2 + bleed - size - start, max: -bleed - start };
+          };
+          return [axis(box.left, box.width, innerWidth), axis(box.top, box.height, innerHeight)];
+        }
+        clamped(view) {
+          const scale = clamp3(view.scale, this.minScale(), MAX_SCALE);
+          const [rangeX, rangeY] = this.ranges(scale);
+          return { scale, x: clamp3(view.x, rangeX.min, rangeX.max), y: clamp3(view.y, rangeY.min, rangeY.max) };
+        }
+        /** Share of the window the picture covers. */
+        coverage() {
+          const box = this.box();
+          const left = Math.max(0, box.left + this.view.x);
+          const top = Math.max(0, box.top + this.view.y);
+          const right = Math.min(innerWidth, box.left + this.view.x + box.width * this.view.scale);
+          const bottom = Math.min(innerHeight, box.top + this.view.y + box.height * this.view.scale);
+          return Math.max(0, right - left) * Math.max(0, bottom - top) / (innerWidth * innerHeight);
+        }
+        settleTo(target) {
+          window.clearTimeout(this.gestureTimer);
+          this.target = target;
+          this.surface.classList.add("is-framing");
+          if (this.reducedMotion.matches) {
+            this.view = target;
+            this.finish();
+            return;
+          }
+          this.lastTime = performance.now();
+          if (!this.frame) this.frame = requestAnimationFrame(this.step);
+        }
+        step = (time) => {
+          this.frame = 0;
+          const target = this.target;
+          if (!target) return;
+          let remaining = Math.min(0.064, (time - this.lastTime) / 1e3);
+          this.lastTime = time;
+          while (remaining > 0) {
+            const dt = Math.min(remaining, 1 / 240);
+            remaining -= dt;
+            for (const key of ["scale", "x", "y"]) {
+              const force = -STIFFNESS * (this.view[key] - target[key]) - DAMPING * this.velocity[key];
+              this.velocity[key] += force * dt;
+              this.view[key] += this.velocity[key] * dt;
+            }
+          }
+          const settled = Math.abs(this.view.scale - target.scale) < 5e-4 && Math.abs(this.view.x - target.x) < 0.25 && Math.abs(this.view.y - target.y) < 0.25 && Math.abs(this.velocity.scale) < 5e-3 && Math.abs(this.velocity.x) + Math.abs(this.velocity.y) < 2;
+          if (settled) {
+            this.view = { ...target };
+            this.finish();
+            return;
+          }
+          this.apply();
+          this.frame = requestAnimationFrame(this.step);
+        };
+        finish() {
+          this.target = null;
+          this.velocity = { scale: 0, x: 0, y: 0 };
+          this.apply();
+          this.surface.classList.remove("is-framing");
+          this.callbacks.coverage(this.coverage());
+          this.callbacks.save(this.framing);
+        }
+        apply() {
+          const media = this.media;
+          const { scale, x, y } = this.view;
+          const resting = Math.abs(scale - 1) < 1e-4 && Math.abs(x) < 0.01 && Math.abs(y) < 0.01;
+          if (media) media.style.transform = resting ? "" : `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
+          this.surface.dataset.zoom = scale.toFixed(3);
+        }
+      };
+    }
+  });
+
   // src/components/wallpaper-surface.ts
   function applySound(video, sound) {
     if (!sound) {
@@ -5309,14 +5728,14 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     window.addEventListener("pointerdown", unmute, true);
     window.addEventListener("keydown", unmute, true);
   }
-  function safeTone(sample) {
+  function safely(sample2, fallback) {
     try {
-      return sample();
+      return sample2();
     } catch {
-      return "dark";
+      return fallback;
     }
   }
-  var WallpaperSurface, SCENE;
+  var FROST_SCALE, SCENE_SIZE, BLEED, LIGHT_BACKDROP_BELOW, WallpaperSurface, SCENE;
   var init_wallpaper_surface = __esm({
     "src/components/wallpaper-surface.ts"() {
       "use strict";
@@ -5324,6 +5743,11 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
       init_store();
       init_wallpaper_service();
       init_base();
+      init_wallpaper_framing();
+      FROST_SCALE = 1 / 6;
+      SCENE_SIZE = { width: 1440, height: 900 };
+      BLEED = 10;
+      LIGHT_BACKDROP_BELOW = 0.75;
       WallpaperSurface = class extends StoreElement {
         observedChanges = ["settings.wallpaper"];
         objectUrl = "";
@@ -5332,8 +5756,30 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         pendingMediaKey = "";
         userPaused = false;
         battery = null;
+        frostFrame = 0;
+        frostTime = -1;
+        bodyObserver = new MutationObserver(() => this.syncFrost());
+        framer = new WallpaperFramer(this, {
+          save: (framing) => {
+            if (sameFraming(framing, appStore.state.settings.wallpaper.framing)) return;
+            void appStore.updateSettings("wallpaper", { framing }).catch(() => void 0);
+          },
+          coverage: (share) => {
+            this.coverage = share;
+            this.reportTone();
+          }
+        });
+        /** The window size, picture size and blur the media layer was last laid out for. */
+        layoutKey = "";
+        pictureTone = null;
+        coverage = 1;
+        /** The picture's own size; the media layer keeps its proportions so nothing inside it is cropped. */
+        naturalSize = SCENE_SIZE;
         connectedCallback() {
           super.connectedCallback();
+          this.framer.connect();
+          window.addEventListener("resize", this.onResize);
+          this.bodyObserver.observe(document.body, { attributeFilter: ["class"] });
           document.addEventListener("visibilitychange", this.syncPlayback);
           void navigator.getBattery?.().then((battery) => {
             this.battery = battery;
@@ -5343,6 +5789,10 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         }
         disconnectedCallback() {
           super.disconnectedCallback();
+          this.framer.disconnect();
+          window.removeEventListener("resize", this.onResize);
+          this.bodyObserver.disconnect();
+          this.stopFrost();
           document.removeEventListener("visibilitychange", this.syncPlayback);
           this.battery?.removeEventListener?.("chargingchange", this.syncPlayback);
           this.releaseObjectUrl();
@@ -5360,15 +5810,52 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         render() {
           const wallpaper = appStore.state.settings.wallpaper;
           if (!this.querySelector(".wallpaper-media")) {
-            this.innerHTML = '<div class="wallpaper-media"></div><div class="wallpaper-tint"></div>';
+            this.innerHTML = '<div class="wallpaper-media"></div><canvas class="wallpaper-frost" aria-hidden="true"></canvas>';
           }
           this.style.setProperty("--wallpaper-blur", `${wallpaper.blur}px`);
           this.style.setProperty("--wallpaper-overlay", String(wallpaper.overlay / 100));
+          if (this.layoutMedia() || !this.framer.busy && !sameFraming(this.framer.framing, wallpaper.framing)) {
+            this.framer.show(wallpaper.framing);
+          }
           this.syncPlayback();
           const mediaKey = `${wallpaper.type}:${wallpaper.value}`;
           if (mediaKey === this.appliedMediaKey || mediaKey === this.pendingMediaKey) return;
           this.pendingMediaKey = mediaKey;
           void this.applyMedia(++this.renderToken, mediaKey);
+        }
+        /**
+         * Sizes the media layer to the picture's own proportions, just large enough
+         * to cover the window (and the blur margin), centred. What falls outside the
+         * window is cropped by the surface, not by the layer, so zooming out can
+         * bring it back.
+         */
+        layoutMedia() {
+          const media = this.querySelector(".wallpaper-media");
+          if (!media) return false;
+          const bleed = appStore.state.settings.wallpaper.blur + BLEED;
+          const { width, height } = this.naturalSize;
+          const key = `${innerWidth}x${innerHeight}|${width}x${height}|${bleed}`;
+          if (key === this.layoutKey) return false;
+          this.layoutKey = key;
+          const cover = Math.max((innerWidth + bleed * 2) / width, (innerHeight + bleed * 2) / height);
+          const w = width * cover;
+          const h = height * cover;
+          media.style.inset = `${(innerHeight - h) / 2}px auto auto ${(innerWidth - w) / 2}px`;
+          media.style.width = `${w}px`;
+          media.style.height = `${h}px`;
+          this.dataset.bleed = String(bleed);
+          return true;
+        }
+        /** The saved framing is window-independent, so a resized window shows the same part of the picture. */
+        onResize = () => {
+          this.layoutMedia();
+          this.framer.show(appStore.state.settings.wallpaper.framing);
+        };
+        setPicture(size, backdrop) {
+          if (size.width > 0 && size.height > 0) this.naturalSize = size;
+          this.style.setProperty("--wallpaper-backdrop", backdrop);
+          this.layoutMedia();
+          this.framer.show(appStore.state.settings.wallpaper.framing);
         }
         syncPlayback = () => {
           const { type, pauseOnBattery, pauseWhenHidden, sound } = appStore.state.settings.wallpaper;
@@ -5380,6 +5867,45 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           if (paused) video.pause();
           else if (video.paused) void video.play().catch(() => void 0);
         };
+        /**
+         * Chrome feeds HDR video into backdrop-filter without tone mapping, so the
+         * launchpad's full-screen blur blows it out. While the launchpad is open the
+         * video is mirrored into a small 2D canvas, which Chrome tone-maps to SDR,
+         * and the blur samples that instead.
+         */
+        syncFrost() {
+          const video = this.querySelector(".wallpaper-media video");
+          const wanted = Boolean(video) && document.body.classList.contains("launchpad-open");
+          if (!wanted) {
+            this.stopFrost();
+            return;
+          }
+          if (this.classList.contains("is-frosted")) return;
+          const canvas = this.querySelector(".wallpaper-frost");
+          if (!canvas) return;
+          canvas.width = Math.max(1, Math.round(this.clientWidth * FROST_SCALE));
+          canvas.height = Math.max(1, Math.round(this.clientHeight * FROST_SCALE));
+          this.frostTime = -1;
+          this.drawFrost();
+          this.classList.add("is-frosted");
+        }
+        drawFrost = () => {
+          this.frostFrame = requestAnimationFrame(this.drawFrost);
+          const video = this.querySelector(".wallpaper-media video");
+          const canvas = this.querySelector(".wallpaper-frost");
+          const context = canvas?.getContext("2d");
+          if (!video || !canvas || !context || !video.videoWidth || video.currentTime === this.frostTime) return;
+          this.frostTime = video.currentTime;
+          const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+          const width = video.videoWidth * scale;
+          const height = video.videoHeight * scale;
+          context.drawImage(video, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+        };
+        stopFrost() {
+          cancelAnimationFrame(this.frostFrame);
+          this.frostFrame = 0;
+          this.classList.remove("is-frosted");
+        }
         async applyMedia(token, mediaKey) {
           const wallpaper = appStore.state.settings.wallpaper;
           const host = this.querySelector(".wallpaper-media");
@@ -5404,17 +5930,23 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
               await candidateVideo.play();
               if (token !== this.renderToken) return;
               candidateVideo.style.removeProperty("visibility");
-              tone = Promise.resolve(safeTone(() => toneOf(candidateVideo)));
+              const video = candidateVideo;
+              tone = Promise.resolve(safely(() => toneOf(video), "dark"));
               this.commitMedia(host, candidateVideo, candidateUrl, "");
+              this.setPicture({ width: video.videoWidth, height: video.videoHeight }, safely(() => backdropOf(video), SCENE_BACKDROP));
               candidateUrl = "";
               candidateVideo = null;
             } else if (wallpaper.type === "local") {
               const blob = await mediaStore.get("image");
               if (!blob) throw new Error("\u627E\u4E0D\u5230\u5DF2\u4FDD\u5B58\u7684\u56FE\u7247\u80CC\u666F");
               candidateUrl = URL.createObjectURL(blob);
+              const image = new Image();
+              image.src = candidateUrl;
+              await image.decode();
               if (token !== this.renderToken) return;
-              tone = toneOfBlob(blob).catch(() => "dark");
+              tone = Promise.resolve(safely(() => toneOf(image), "dark"));
               this.commitMedia(host, null, candidateUrl, `url("${candidateUrl}")`);
+              this.setPicture({ width: image.naturalWidth, height: image.naturalHeight }, safely(() => backdropOf(image), SCENE_BACKDROP));
               candidateUrl = "";
             } else {
               if (token !== this.renderToken) return;
@@ -5422,12 +5954,18 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
               const background = preset ? `url("${wallpaper.value.replaceAll('"', "%22")}")` : "";
               this.commitMedia(host, null, "", background);
               if (!preset) host.innerHTML = SCENE;
+              this.setPicture(SCENE_SIZE, SCENE_BACKDROP);
             }
             this.appliedMediaKey = mediaKey;
+            this.stopFrost();
+            this.syncFrost();
             this.syncPlayback();
             this.reportState();
             const resolved = await tone;
-            if (token === this.renderToken) this.reportTone(resolved);
+            if (token === this.renderToken) {
+              this.pictureTone = resolved;
+              this.reportTone();
+            }
           } catch (error) {
             if (token === this.renderToken) this.reportError(error);
           } finally {
@@ -5449,7 +5987,13 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         reportState() {
           this.dispatchEvent(new CustomEvent("wallpaper-state", { bubbles: true, composed: true, detail: this.state }));
         }
-        reportTone(tone) {
+        /**
+         * The text colour “自动” picks: the picture's own brightness, unless it has
+         * been shrunk so far that the text mostly sits on the pale frosted backdrop.
+         */
+        reportTone() {
+          if (!this.pictureTone) return;
+          const tone = this.coverage < LIGHT_BACKDROP_BELOW ? "light" : this.pictureTone;
           this.dispatchEvent(new CustomEvent("wallpaper-tone", { bubbles: true, composed: true, detail: { tone } }));
         }
         reportError(error) {

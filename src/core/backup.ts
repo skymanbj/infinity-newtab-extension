@@ -2,6 +2,7 @@ import type {
     AppSettings,
     Bookmark,
     LayoutSettings,
+    WallpaperFraming,
     WallpaperSettings
 } from './types';
 import { cleanText, normalizeUrl, sanitizeRemoteUrl } from './utils';
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
         value: '',
         blur: 0,
         overlay: 12,
+        framing: { scale: 1, x: 0.5, y: 0.5 },
         idleHide: true,
         pauseOnBattery: true,
         pauseWhenHidden: true,
@@ -177,6 +179,7 @@ export function sanitizeSettings(value: unknown): AppSettings {
             value: sanitizeWallpaperValue(wallpaper.value),
             blur: clampNumber(wallpaper.blur, 0, 40, 0),
             overlay: clampNumber(wallpaper.overlay, 0, 60, 12),
+            framing: sanitizeFraming(wallpaper.framing),
             idleHide: booleanOr(wallpaper.idleHide, true),
             pauseOnBattery: booleanOr(wallpaper.pauseOnBattery, true),
             pauseWhenHidden: booleanOr(wallpaper.pauseWhenHidden, true),
@@ -246,6 +249,17 @@ export function sanitizeBookmarkIcon(value: unknown): string {
 function sanitizeWallpaperValue(value: unknown): string {
     if (typeof value === 'string' && (value === '' || /^(local|online)(-\d+)?$/.test(value))) return value;
     return sanitizeRemoteUrl(value, true);
+}
+
+/** The scale's real lower limit depends on the picture's shape, so only a loose floor is applied here. */
+function sanitizeFraming(value: unknown): WallpaperFraming {
+    const source = isRecord(value) ? value : {};
+    const fallback = DEFAULT_SETTINGS.wallpaper.framing;
+    return {
+        scale: clampNumber(source.scale, 0.05, 5, fallback.scale),
+        x: clampNumber(source.x, 0, 1, fallback.x),
+        y: clampNumber(source.y, 0, 1, fallback.y)
+    };
 }
 
 /** “常访问”屏蔽名单：只保留单个 host 形式的短字符串，去重并按上限截断。 */

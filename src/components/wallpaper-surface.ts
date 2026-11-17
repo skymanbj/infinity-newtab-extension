@@ -1,12 +1,22 @@
 import { mediaStore } from '../core/media-store';
 import { appStore } from '../core/store';
 import type { ResolvedTheme } from '../core/types';
-import { toneOf, toneOfBlob } from '../core/wallpaper-service';
+import { SCENE_BACKDROP, backdropOf, toneOf } from '../core/wallpaper-service';
 import { StoreElement } from './base';
+import { WallpaperFramer, sameFraming } from './wallpaper-framing';
 
 export type WallpaperState = { label: string; animated: boolean; paused: boolean };
 
 type BatteryManager = EventTarget & { charging: boolean };
+type Size = { width: number; height: number };
+
+const FROST_SCALE = 1 / 6;
+/** Twilight Bay is drawn on a 1440 × 900 canvas. */
+const SCENE_SIZE: Size = { width: 1440, height: 900 };
+/** Extra margin past the window on every side, on top of the blur radius, so a blurred edge never shows. */
+const BLEED = 10;
+/** Once the picture covers less of the window than this, most text sits on the pale backdrop. */
+const LIGHT_BACKDROP_BELOW = 0.75;
 
 /**
  * Full-bleed wallpaper: the built-in Twilight Bay scene, a cached image or a
@@ -20,9 +30,31 @@ export class WallpaperSurface extends StoreElement {
     private pendingMediaKey = '';
     private userPaused = false;
     private battery: BatteryManager | null = null;
+    private frostFrame = 0;
+    private frostTime = -1;
+    private readonly bodyObserver = new MutationObserver(() => this.syncFrost());
+    private readonly framer = new WallpaperFramer(this, {
+        save: (framing) => {
+            if (sameFraming(framing, appStore.state.settings.wallpaper.framing)) return;
+            void appStore.updateSettings('wallpaper', { framing }).catch(() => undefined);
+        },
+        coverage: (share) => {
+            this.coverage = share;
+            this.reportTone();
+        }
+    });
+    /** The window size, picture size and blur the media layer was last laid out for. */
+    private layoutKey = '';
+    private pictureTone: ResolvedTheme | null = null;
+    private coverage = 1;
+    /** The picture's own size; the media layer keeps its proportions so nothing inside it is cropped. */
+    private naturalSize: Size = SCENE_SIZE;
 
     connectedCallback(): void {
         super.connectedCallback();
+        this.framer.connect();
+        window.addEventListener('resize', this.onResize);
+        this.bodyObserver.observe(document.body, { attributeFilter: ['class'] });
         document.addEventListener('visibilitychange', this.syncPlayback);
         void navigator.getBattery?.().then((battery) => {
             this.battery = battery as unknown as BatteryManager;
@@ -33,6 +65,10 @@ export class WallpaperSurface extends StoreElement {
 
     disconnectedCallback(): void {
         super.disconnectedCallback();
+        this.framer.disconnect();
+        window.removeEventListener('resize', this.onResize);
+        this.bodyObserver.disconnect();
+        this.stopFrost();
         document.removeEventListener('visibilitychange', this.syncPlayback);
         this.battery?.removeEventListener?.('chargingchange', this.syncPlayback);
         this.releaseObjectUrl();
@@ -55,15 +91,56 @@ export class WallpaperSurface extends StoreElement {
     protected render(): void {
         const wallpaper = appStore.state.settings.wallpaper;
         if (!this.querySelector('.wallpaper-media')) {
-            this.innerHTML = '<div class="wallpaper-media"></div><div class="wallpaper-tint"></div>';
+            this.innerHTML = '<div class="wallpaper-media"></div><canvas class="wallpaper-frost" aria-hidden="true"></canvas>';
         }
         this.style.setProperty('--wallpaper-blur', `${wallpaper.blur}px`);
         this.style.setProperty('--wallpaper-overlay', String(wallpaper.overlay / 100));
+        // A framing saved by another tab, or a changed blur margin, is shown unless a gesture is under way here.
+        if (this.layoutMedia() || (!this.framer.busy && !sameFraming(this.framer.framing, wallpaper.framing))) {
+            this.framer.show(wallpaper.framing);
+        }
         this.syncPlayback();
         const mediaKey = `${wallpaper.type}:${wallpaper.value}`;
         if (mediaKey === this.appliedMediaKey || mediaKey === this.pendingMediaKey) return;
         this.pendingMediaKey = mediaKey;
         void this.applyMedia(++this.renderToken, mediaKey);
+    }
+
+    /**
+     * Sizes the media layer to the picture's own proportions, just large enough
+     * to cover the window (and the blur margin), centred. What falls outside the
+     * window is cropped by the surface, not by the layer, so zooming out can
+     * bring it back.
+     */
+    private layoutMedia(): boolean {
+        const media = this.querySelector<HTMLElement>('.wallpaper-media');
+        if (!media) return false;
+        const bleed = appStore.state.settings.wallpaper.blur + BLEED;
+        const { width, height } = this.naturalSize;
+        const key = `${innerWidth}x${innerHeight}|${width}x${height}|${bleed}`;
+        if (key === this.layoutKey) return false;
+        this.layoutKey = key;
+        const cover = Math.max((innerWidth + bleed * 2) / width, (innerHeight + bleed * 2) / height);
+        const w = width * cover;
+        const h = height * cover;
+        media.style.inset = `${(innerHeight - h) / 2}px auto auto ${(innerWidth - w) / 2}px`;
+        media.style.width = `${w}px`;
+        media.style.height = `${h}px`;
+        this.dataset.bleed = String(bleed);
+        return true;
+    }
+
+    /** The saved framing is window-independent, so a resized window shows the same part of the picture. */
+    private readonly onResize = (): void => {
+        this.layoutMedia();
+        this.framer.show(appStore.state.settings.wallpaper.framing);
+    };
+
+    private setPicture(size: Size, backdrop: string): void {
+        if (size.width > 0 && size.height > 0) this.naturalSize = size;
+        this.style.setProperty('--wallpaper-backdrop', backdrop);
+        this.layoutMedia();
+        this.framer.show(appStore.state.settings.wallpaper.framing);
     }
 
     private readonly syncPlayback = (): void => {
@@ -78,6 +155,48 @@ export class WallpaperSurface extends StoreElement {
         if (paused) video.pause();
         else if (video.paused) void video.play().catch(() => undefined);
     };
+
+    /**
+     * Chrome feeds HDR video into backdrop-filter without tone mapping, so the
+     * launchpad's full-screen blur blows it out. While the launchpad is open the
+     * video is mirrored into a small 2D canvas, which Chrome tone-maps to SDR,
+     * and the blur samples that instead.
+     */
+    private syncFrost(): void {
+        const video = this.querySelector<HTMLVideoElement>('.wallpaper-media video');
+        const wanted = Boolean(video) && document.body.classList.contains('launchpad-open');
+        if (!wanted) {
+            this.stopFrost();
+            return;
+        }
+        if (this.classList.contains('is-frosted')) return;
+        const canvas = this.querySelector<HTMLCanvasElement>('.wallpaper-frost');
+        if (!canvas) return;
+        canvas.width = Math.max(1, Math.round(this.clientWidth * FROST_SCALE));
+        canvas.height = Math.max(1, Math.round(this.clientHeight * FROST_SCALE));
+        this.frostTime = -1;
+        this.drawFrost();
+        this.classList.add('is-frosted');
+    }
+
+    private readonly drawFrost = (): void => {
+        this.frostFrame = requestAnimationFrame(this.drawFrost);
+        const video = this.querySelector<HTMLVideoElement>('.wallpaper-media video');
+        const canvas = this.querySelector<HTMLCanvasElement>('.wallpaper-frost');
+        const context = canvas?.getContext('2d');
+        if (!video || !canvas || !context || !video.videoWidth || video.currentTime === this.frostTime) return;
+        this.frostTime = video.currentTime;
+        const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+        const width = video.videoWidth * scale;
+        const height = video.videoHeight * scale;
+        context.drawImage(video, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+    };
+
+    private stopFrost(): void {
+        cancelAnimationFrame(this.frostFrame);
+        this.frostFrame = 0;
+        this.classList.remove('is-frosted');
+    }
 
     private async applyMedia(token: number, mediaKey: string): Promise<void> {
         const wallpaper = appStore.state.settings.wallpaper;
@@ -103,17 +222,23 @@ export class WallpaperSurface extends StoreElement {
                 await candidateVideo.play();
                 if (token !== this.renderToken) return;
                 candidateVideo.style.removeProperty('visibility');
-                tone = Promise.resolve(safeTone(() => toneOf(candidateVideo!)));
+                const video = candidateVideo;
+                tone = Promise.resolve(safely(() => toneOf(video), 'dark' as ResolvedTheme));
                 this.commitMedia(host, candidateVideo, candidateUrl, '');
+                this.setPicture({ width: video.videoWidth, height: video.videoHeight }, safely(() => backdropOf(video), SCENE_BACKDROP));
                 candidateUrl = '';
                 candidateVideo = null;
             } else if (wallpaper.type === 'local') {
                 const blob = await mediaStore.get('image');
                 if (!blob) throw new Error('找不到已保存的图片背景');
                 candidateUrl = URL.createObjectURL(blob);
+                const image = new Image();
+                image.src = candidateUrl;
+                await image.decode();
                 if (token !== this.renderToken) return;
-                tone = toneOfBlob(blob).catch(() => 'dark' as const);
+                tone = Promise.resolve(safely(() => toneOf(image), 'dark' as ResolvedTheme));
                 this.commitMedia(host, null, candidateUrl, `url("${candidateUrl}")`);
+                this.setPicture({ width: image.naturalWidth, height: image.naturalHeight }, safely(() => backdropOf(image), SCENE_BACKDROP));
                 candidateUrl = '';
             } else {
                 if (token !== this.renderToken) return;
@@ -122,12 +247,18 @@ export class WallpaperSurface extends StoreElement {
                 // Remote presets from old versions cannot be sampled cross-origin; assume a busy, dark image.
                 this.commitMedia(host, null, '', background);
                 if (!preset) host.innerHTML = SCENE;
+                this.setPicture(SCENE_SIZE, SCENE_BACKDROP);
             }
             this.appliedMediaKey = mediaKey;
+            this.stopFrost();
+            this.syncFrost();
             this.syncPlayback();
             this.reportState();
             const resolved = await tone;
-            if (token === this.renderToken) this.reportTone(resolved);
+            if (token === this.renderToken) {
+                this.pictureTone = resolved;
+                this.reportTone();
+            }
         } catch (error) {
             if (token === this.renderToken) this.reportError(error);
         } finally {
@@ -150,7 +281,13 @@ export class WallpaperSurface extends StoreElement {
         this.dispatchEvent(new CustomEvent<WallpaperState>('wallpaper-state', { bubbles: true, composed: true, detail: this.state }));
     }
 
-    private reportTone(tone: ResolvedTheme): void {
+    /**
+     * The text colour “自动” picks: the picture's own brightness, unless it has
+     * been shrunk so far that the text mostly sits on the pale frosted backdrop.
+     */
+    private reportTone(): void {
+        if (!this.pictureTone) return;
+        const tone = this.coverage < LIGHT_BACKDROP_BELOW ? 'light' : this.pictureTone;
         this.dispatchEvent(new CustomEvent('wallpaper-tone', { bubbles: true, composed: true, detail: { tone } }));
     }
 
@@ -195,11 +332,12 @@ function applySound(video: HTMLVideoElement, sound: boolean): void {
     window.addEventListener('keydown', unmute, true);
 }
 
-function safeTone(sample: () => ResolvedTheme): ResolvedTheme {
+/** Sampling pixels can fail (an undecodable frame); the fallback keeps the wallpaper usable. */
+function safely<T>(sample: () => T, fallback: T): T {
     try {
         return sample();
     } catch {
-        return 'dark';
+        return fallback;
     }
 }
 

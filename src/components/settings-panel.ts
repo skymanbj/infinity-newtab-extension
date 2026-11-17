@@ -16,7 +16,7 @@ import {
     usesBackgroundChannel
 } from '../core/webdav';
 import { escapeHtml } from '../core/utils';
-import { resetWallpaper, useLocalWallpaper, useOnlineWallpaper, wallpaperLabel } from '../core/wallpaper-service';
+import { mediaKindOf, resetWallpaper, useLocalWallpaper, useOnlineWallpaper, wallpaperLabel } from '../core/wallpaper-service';
 import { StoreElement } from './base';
 import { formatDate } from './dashboard-header';
 import { ICONS } from './icons';
@@ -26,6 +26,8 @@ import { afterMotion, confirmAction, notify, notifyError, pushLayer } from './ui
 
 type Pane = 'appearance' | 'widgets' | 'dock' | 'wallpaper' | 'data';
 type Option = [value: string, label: string];
+
+const PASTE_LABEL = SHORTCUT_LABEL === '⌘K' ? '⌘V' : 'Ctrl+V';
 
 /** 滑块改动落在哪个设置分区；没列出来的都是壁纸。 */
 const RANGE_SECTIONS: Record<string, 'layout' | 'wallpaper'> = {
@@ -55,6 +57,11 @@ export class SettingsPanel extends StoreElement {
     private previewToken = 0;
     private excludedKey = '\u0000unset';
 
+    connectedCallback(): void {
+        super.connectedCallback();
+        document.addEventListener('paste', this.onPaste);
+    }
+
     open(pane?: Pane): void {
         if (pane) this.selectPane(pane);
         if (this.openState) return;
@@ -80,6 +87,7 @@ export class SettingsPanel extends StoreElement {
 
     disconnectedCallback(): void {
         super.disconnectedCallback();
+        document.removeEventListener('paste', this.onPaste);
         if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
     }
 
@@ -182,7 +190,7 @@ export class SettingsPanel extends StoreElement {
 
     private wallpaperPane({ wallpaper }: AppSettings): string {
         return pane('wallpaper', '壁纸', `
-            <div class="settings-group wallpaper-card setting-row" data-search="壁纸 视频 图片 在线 选择 恢复默认">
+            <div class="settings-group wallpaper-card setting-row" data-search="壁纸 视频 图片 照片 在线 选择 拖放 粘贴 恢复默认">
                 <div class="wallpaper-preview" aria-hidden="true"><div class="wallpaper-preview-media"></div><span class="wallpaper-duration" hidden></span></div>
                 <div class="wallpaper-info">
                     <strong class="wallpaper-name"></strong>
@@ -192,6 +200,7 @@ export class SettingsPanel extends StoreElement {
                         <button class="pill-button random-wallpaper" type="button" data-liquid-item>换一张风光壁纸</button>
                         <button class="pill-button reset-wallpaper" type="button" data-liquid-item>恢复默认</button>
                     </div>
+                    <span class="row-sub wallpaper-hint">也可以把照片或视频拖到这里，或复制后按 ${PASTE_LABEL} 粘贴</span>
                 </div>
             </div>
             ${group('显示', `
@@ -332,6 +341,10 @@ export class SettingsPanel extends StoreElement {
             if (file) void this.withBusy(upload.closest('label')!, () => useLocalWallpaper(file));
         });
         this.querySelector('.random-wallpaper')?.addEventListener('click', (event) => void this.withBusy(event.currentTarget as HTMLElement, useOnlineWallpaper));
+        const windowElement = this.querySelector<HTMLElement>('.settings-window')!;
+        windowElement.addEventListener('dragover', this.onDragOver);
+        windowElement.addEventListener('dragleave', this.onDragLeave);
+        windowElement.addEventListener('drop', this.onDrop);
         this.querySelector('.reset-wallpaper')?.addEventListener('click', () => void resetWallpaper().catch(notifyError));
         this.querySelector('.restore-recent')?.addEventListener('click', () => {
             void appStore.restoreRecentSites().then((count) => {
@@ -551,6 +564,55 @@ export class SettingsPanel extends StoreElement {
     }
 
     /** The type control is a shortcut: video and image open the file picker, online fetches a new picture. */
+    /** True while the wallpaper card is on screen (its pane, or a settings search that shows it). */
+    private get wallpaperCardVisible(): boolean {
+        const card = this.querySelector<HTMLElement>('.wallpaper-card');
+        return this.openState && Boolean(card?.getClientRects().length);
+    }
+
+    private useWallpaperFile(file: File): void {
+        void this.withBusy(this.querySelector<HTMLElement>('.upload-wallpaper')!, () => useLocalWallpaper(file));
+    }
+
+    /**
+     * Files dropped anywhere on the settings window are caught so Chrome does not
+     * navigate away to them; only the wallpaper pane takes the drop.
+     */
+    private readonly onDragOver = (event: DragEvent): void => {
+        if (!event.dataTransfer?.types.includes('Files')) return;
+        event.preventDefault();
+        const accepts = this.wallpaperCardVisible && Boolean((event.target as HTMLElement).closest('.settings-pane[data-pane="wallpaper"]'));
+        event.dataTransfer.dropEffect = accepts ? 'copy' : 'none';
+        this.querySelector('.wallpaper-card')?.classList.toggle('is-drop-target', accepts);
+    };
+
+    private readonly onDragLeave = (event: DragEvent): void => {
+        const windowElement = this.querySelector('.settings-window');
+        if (windowElement?.contains(event.relatedTarget as Node | null)) return;
+        this.querySelector('.wallpaper-card')?.classList.remove('is-drop-target');
+    };
+
+    private readonly onDrop = (event: DragEvent): void => {
+        if (!event.dataTransfer?.types.includes('Files')) return;
+        event.preventDefault();
+        const card = this.querySelector('.wallpaper-card');
+        const accepts = card?.classList.contains('is-drop-target');
+        card?.classList.remove('is-drop-target');
+        if (!accepts) return;
+        const files = [...event.dataTransfer.files];
+        const file = files.find((item) => mediaKindOf(item)) ?? files[0];
+        if (file) this.useWallpaperFile(file);
+    };
+
+    /** A picture copied in Photos (⌘C) and pasted while the wallpaper card is on screen becomes the wallpaper. */
+    private readonly onPaste = (event: ClipboardEvent): void => {
+        if (!this.wallpaperCardVisible) return;
+        const file = [...(event.clipboardData?.files ?? [])].find((item) => mediaKindOf(item));
+        if (!file) return;
+        event.preventDefault();
+        this.useWallpaperFile(file);
+    };
+
     private pickWallpaper(kind: string): void {
         if (kind === 'online') {
             void this.withBusy(this.querySelector<HTMLElement>('.random-wallpaper')!, useOnlineWallpaper);

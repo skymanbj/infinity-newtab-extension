@@ -31,11 +31,19 @@ export interface LayoutSettings {
     launchpadTile: number;
 }
 
+/** How the wallpaper sits behind the home screen: scale from fitting whole to 5×, centred on (x, y) in 0–1. */
+export interface WallpaperFraming {
+    scale: number;
+    x: number;
+    y: number;
+}
+
 export interface WallpaperSettings {
     type: WallpaperType;
     value: string;
     blur: number;
     overlay: number;
+    framing: WallpaperFraming;
     idleHide: boolean;
     pauseOnBattery: boolean;
     pauseWhenHidden: boolean;
