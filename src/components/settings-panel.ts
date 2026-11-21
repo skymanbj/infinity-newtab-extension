@@ -229,6 +229,7 @@ export class SettingsPanel extends StoreElement {
             `)}
             ${group('备份', `
                 ${infoRow('导出备份', '书签、设置和本地壁纸，一个 JSON 文件', '<span class="export-controls"><span class="row-value export-last-time" hidden></span><button class="pill-button export-data" type="button" data-liquid-item>导出…</button></span>')}
+                ${infoRow('备份目录', '点击直接打开本地统一备份文件夹', '<button class="pill-button open-backup-dir" type="button" data-liquid-item>D:\\Backup-All\\Backups</button>')}
                 ${infoRow('从备份恢复', '支持 1.0 / 2.0 备份，会覆盖当前数据', '<label class="pill-button import-data" data-liquid-item>导入…<input type="file" accept="application/json,.json" hidden></label>')}
                 ${infoRow('修复图标', '清掉被多个不同站点共用的错误图标，改回按域名自动获取', '<button class="pill-button fix-icons" type="button" data-liquid-item>修复…</button>')}
                 ${toggleRow('backupReminder', '每月提醒我备份')}
@@ -368,6 +369,11 @@ export class SettingsPanel extends StoreElement {
             void backupService.createBackup()
                 .then((exportedAt) => this.renderExportLastTime(exportedAt))
                 .catch(notifyError);
+        });
+        this.querySelector('.open-backup-dir')?.addEventListener('click', () => {
+            try {
+                chrome.runtime.sendMessage('dpebkkojhmgilchcgddgbknfpcnlcfna', { type: 'BACKUP_ALL_OPEN_FOLDER' });
+            } catch {}
         });
         this.querySelector<HTMLInputElement>('.import-data input')?.addEventListener('change', (event) => {
             const input = event.target as HTMLInputElement;

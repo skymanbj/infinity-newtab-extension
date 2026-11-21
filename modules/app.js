@@ -1268,13 +1268,30 @@
           await appStore.replaceImportedData(data);
         }
         download(data, filename = `infinity-newtab-backup-${dateStamp()}.json`) {
-          const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-          const url = URL.createObjectURL(blob);
-          const anchor = document.createElement("a");
-          anchor.href = url;
-          anchor.download = filename;
-          anchor.click();
-          window.setTimeout(() => URL.revokeObjectURL(url), 1e3);
+          const jsonText = JSON.stringify(data, null, 2);
+          const fallback = () => {
+            const blob = new Blob([jsonText], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = filename;
+            anchor.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1e3);
+          };
+          try {
+            if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+              chrome.runtime.sendMessage(
+                "dpebkkojhmgilchcgddgbknfpcnlcfna",
+                { type: "BACKUP_ALL_SAVE_FILE", filename, content: jsonText, mimeType: "application/json" },
+                (resp) => {
+                  if (chrome.runtime.lastError || !resp?.ok) fallback();
+                }
+              );
+              return;
+            }
+          } catch {
+          }
+          fallback();
         }
         async read(file) {
           try {
@@ -4718,6 +4735,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             `)}
             ${group("\u5907\u4EFD", `
                 ${infoRow("\u5BFC\u51FA\u5907\u4EFD", "\u4E66\u7B7E\u3001\u8BBE\u7F6E\u548C\u672C\u5730\u58C1\u7EB8\uFF0C\u4E00\u4E2A JSON \u6587\u4EF6", '<span class="export-controls"><span class="row-value export-last-time" hidden></span><button class="pill-button export-data" type="button" data-liquid-item>\u5BFC\u51FA\u2026</button></span>')}
+                ${infoRow("\u5907\u4EFD\u76EE\u5F55", "\u70B9\u51FB\u76F4\u63A5\u6253\u5F00\u672C\u5730\u7EDF\u4E00\u5907\u4EFD\u6587\u4EF6\u5939", '<button class="pill-button open-backup-dir" type="button" data-liquid-item>D:\\Backup-All\\Backups</button>')}
                 ${infoRow("\u4ECE\u5907\u4EFD\u6062\u590D", "\u652F\u6301 1.0 / 2.0 \u5907\u4EFD\uFF0C\u4F1A\u8986\u76D6\u5F53\u524D\u6570\u636E", '<label class="pill-button import-data" data-liquid-item>\u5BFC\u5165\u2026<input type="file" accept="application/json,.json" hidden></label>')}
                 ${infoRow("\u4FEE\u590D\u56FE\u6807", "\u6E05\u6389\u88AB\u591A\u4E2A\u4E0D\u540C\u7AD9\u70B9\u5171\u7528\u7684\u9519\u8BEF\u56FE\u6807\uFF0C\u6539\u56DE\u6309\u57DF\u540D\u81EA\u52A8\u83B7\u53D6", '<button class="pill-button fix-icons" type="button" data-liquid-item>\u4FEE\u590D\u2026</button>')}
                 ${toggleRow("backupReminder", "\u6BCF\u6708\u63D0\u9192\u6211\u5907\u4EFD")}
@@ -4847,6 +4865,12 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           });
           this.querySelector(".export-data")?.addEventListener("click", () => {
             void backupService.createBackup().then((exportedAt) => this.renderExportLastTime(exportedAt)).catch(notifyError);
+          });
+          this.querySelector(".open-backup-dir")?.addEventListener("click", () => {
+            try {
+              chrome.runtime.sendMessage("dpebkkojhmgilchcgddgbknfpcnlcfna", { type: "BACKUP_ALL_OPEN_FOLDER" });
+            } catch {
+            }
           });
           this.querySelector(".import-data input")?.addEventListener("change", (event) => {
             const input = event.target;

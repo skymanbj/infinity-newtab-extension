@@ -46,13 +46,29 @@ export class BackupService {
     }
 
     download(data: BackupData, filename = `infinity-newtab-backup-${dateStamp()}.json`): void {
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = filename;
-        anchor.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        const jsonText = JSON.stringify(data, null, 2);
+        const fallback = () => {
+            const blob = new Blob([jsonText], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = filename;
+            anchor.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        };
+        try {
+            if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+                chrome.runtime.sendMessage(
+                    'dpebkkojhmgilchcgddgbknfpcnlcfna',
+                    { type: 'BACKUP_ALL_SAVE_FILE', filename, content: jsonText, mimeType: 'application/json' },
+                    (resp: any) => {
+                        if (chrome.runtime.lastError || !resp?.ok) fallback();
+                    }
+                );
+                return;
+            }
+        } catch {}
+        fallback();
     }
 
     async read(file: File): Promise<unknown> {
