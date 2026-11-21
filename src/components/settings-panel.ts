@@ -5,13 +5,16 @@ import type { AppSettings, BackupData } from '../core/types';
 import {
     DEFAULT_WEBDAV_FILE,
     type WebDavAccount,
+    type WebDavBackupMeta,
     deleteBackup,
     downloadBackup,
     ensureWebDavAccess,
     inspectBackup,
     loadWebDavAccount,
+    loadWebDavBackupMeta,
     sanitizeWebDavAccount,
     saveWebDavAccount,
+    saveWebDavBackupMeta,
     uploadBackup,
     usesBackgroundChannel
 } from '../core/webdav';
@@ -55,6 +58,7 @@ export class SettingsPanel extends StoreElement {
     private releaseLayer: (() => void) | null = null;
     private previewUrl = '';
     private previewToken = 0;
+    private webdavProbeToken = 0;
     private excludedKey = '\u0000unset';
 
     connectedCallback(): void {
@@ -224,7 +228,7 @@ export class SettingsPanel extends StoreElement {
                 ${infoRow('本地媒体', '视频与图片壁纸保存在本机，不占用同步空间', '<span class="row-value media-usage"></span>')}
             `)}
             ${group('备份', `
-                ${infoRow('导出备份', '书签、设置和本地壁纸，一个 JSON 文件', '<button class="pill-button export-data" type="button" data-liquid-item>导出…</button>')}
+                ${infoRow('导出备份', '书签、设置和本地壁纸，一个 JSON 文件', '<span class="export-controls"><span class="row-value export-last-time" hidden></span><button class="pill-button export-data" type="button" data-liquid-item>导出…</button></span>')}
                 ${infoRow('从备份恢复', '支持 1.0 / 2.0 备份，会覆盖当前数据', '<label class="pill-button import-data" data-liquid-item>导入…<input type="file" accept="application/json,.json" hidden></label>')}
                 ${infoRow('修复图标', '清掉被多个不同站点共用的错误图标，改回按域名自动获取', '<button class="pill-button fix-icons" type="button" data-liquid-item>修复…</button>')}
                 ${toggleRow('backupReminder', '每月提醒我备份')}
@@ -245,6 +249,7 @@ export class SettingsPanel extends StoreElement {
                 ${rowLabel('远程备份', '备份到自己的 WebDAV 服务器，账密只存在本机')}
                 <span class="webdav-status">未配置</span>
             </div>
+            <span class="webdav-last-backup" hidden></span>
             <div class="webdav-fields">
                 <label class="webdav-field webdav-field--wide"><span>服务器地址</span><input class="webdav-url" type="text" placeholder="https://dav.example.com/remote.php/dav/files/me" spellcheck="false" autocomplete="off" aria-label="WebDAV 服务器地址"></label>
                 <label class="webdav-field"><span>账户</span><input class="webdav-user" type="text" spellcheck="false" autocomplete="off" aria-label="WebDAV 账户"></label>
@@ -359,7 +364,11 @@ export class SettingsPanel extends StoreElement {
                 if (done) notify(`已恢复 ${host}`);
             }).catch(notifyError);
         });
-        this.querySelector('.export-data')?.addEventListener('click', () => void backupService.createBackup().catch(notifyError));
+        this.querySelector('.export-data')?.addEventListener('click', () => {
+            void backupService.createBackup()
+                .then((exportedAt) => this.renderExportLastTime(exportedAt))
+                .catch(notifyError);
+        });
         this.querySelector<HTMLInputElement>('.import-data input')?.addEventListener('change', (event) => {
             const input = event.target as HTMLInputElement;
             const file = input.files?.[0];
@@ -686,7 +695,7 @@ export class SettingsPanel extends StoreElement {
         const { bookmarks, folders } = appStore.state;
         const summary = this.querySelector('.sync-summary');
         if (summary) summary.textContent = `${bookmarks.length} 个书签 · ${folders.length - 1} 个文件夹`;
-        const [bytes, media] = await Promise.all([
+        const [bytes, media, lastExportAt] = await Promise.all([
             new Promise<number | null>((resolve) => {
                 try {
                     if (!chrome.storage.sync.getBytesInUse) resolve(null);
@@ -695,7 +704,8 @@ export class SettingsPanel extends StoreElement {
                     resolve(null);
                 }
             }),
-            Promise.all([mediaStore.get('image'), mediaStore.get('video')]).catch(() => [null, null])
+            Promise.all([mediaStore.get('image'), mediaStore.get('video')]).catch(() => [null, null]),
+            backupService.loadLastExportAt().catch(() => '')
         ]);
         const usage = this.querySelector('.sync-usage');
         if (usage) usage.textContent = bytes === null ? '' : `已用 ${formatBytes(bytes)} / 100 KB`;
@@ -704,7 +714,16 @@ export class SettingsPanel extends StoreElement {
             const total = media.reduce((sum, blob) => sum + (blob?.size ?? 0), 0);
             mediaUsage.textContent = total ? formatBytes(total) : '无';
         }
+        this.renderExportLastTime(lastExportAt);
         void this.refreshWebDav();
+    }
+
+    private renderExportLastTime(raw: string): void {
+        const element = this.querySelector<HTMLElement>('.export-last-time');
+        if (!element) return;
+        const formatted = formatBackupTime(raw);
+        element.hidden = !formatted;
+        element.textContent = formatted ? `最新导出：${formatted}` : '';
     }
 
     private async importData(file: File): Promise<void> {
@@ -738,7 +757,7 @@ export class SettingsPanel extends StoreElement {
     }
 
     /** Refills the form and decides which remote actions are available. */
-    private async refreshWebDav(): Promise<void> {
+    private async refreshWebDav(probe = true): Promise<void> {
         const card = this.querySelector<HTMLElement>('.webdav-card');
         if (!card) return;
         const fill = (selector: string, value: string) => {
@@ -764,6 +783,36 @@ export class SettingsPanel extends StoreElement {
             const button = card.querySelector<HTMLButtonElement>(selector);
             if (button && !button.classList.contains('is-busy')) button.disabled = !account;
         }
+        const meta = account ? await loadWebDavBackupMeta().catch(() => null) : null;
+        this.renderWebDavLastBackup(card, account, meta);
+        if (!probe || !account || !usesBackgroundChannel(account.url)) return;
+        const token = ++this.webdavProbeToken;
+        void inspectBackup(account).then(async (info) => {
+            if (token !== this.webdavProbeToken) return;
+            const latest: WebDavBackupMeta = info
+                ? { exists: true, modified: info.modified, size: info.size }
+                : { exists: false, modified: '', size: 0 };
+            await saveWebDavBackupMeta(latest).catch(() => undefined);
+            if (token === this.webdavProbeToken) this.renderWebDavLastBackup(card, account, latest);
+        }).catch(() => undefined);
+    }
+
+    private renderWebDavLastBackup(card: HTMLElement, account: WebDavAccount | null, meta: WebDavBackupMeta | null): void {
+        const element = card.querySelector<HTMLElement>('.webdav-last-backup');
+        if (!element) return;
+        if (!account || !meta) {
+            element.hidden = true;
+            element.textContent = '';
+            return;
+        }
+        element.hidden = false;
+        if (!meta.exists) {
+            element.textContent = '最新备份：远端暂无备份文件';
+            return;
+        }
+        const time = formatBackupTime(meta.modified);
+        const size = meta.size > 0 ? `（${formatBytes(meta.size)}）` : '';
+        element.textContent = time ? `最新备份：${time}${size}` : `最新备份：远端已有备份${size}（服务器未返回时间）`;
     }
 
     private async saveWebDav(): Promise<void> {
@@ -775,12 +824,15 @@ export class SettingsPanel extends StoreElement {
             const background = await ensureWebDavAccess(account);
             await saveWebDavAccount(account);
             const info = await inspectBackup(account).catch(() => null);
+            await saveWebDavBackupMeta(info
+                ? { exists: true, modified: info.modified, size: info.size }
+                : { exists: false, modified: '', size: 0 }).catch(() => undefined);
             const remote = info ? `远端已有 ${formatBytes(info.size)} 的备份` : '远端还没有备份文件';
             notify(background
                 ? `已保存：${remote}。请求走后台通道，不受跨域限制`
                 : `已保存：${remote}。但未启用后台通道，上传仍会被跨域拦截`,
                 background ? 'success' : 'info');
-            await this.refreshWebDav();
+            await this.refreshWebDav(false);
         });
     }
 
@@ -792,11 +844,16 @@ export class SettingsPanel extends StoreElement {
             const data: BackupData = await backupService.exportData();
             const bytes = await uploadBackup(account, data);
             const info = await inspectBackup(account).catch(() => null);
+            await saveWebDavBackupMeta({
+                exists: true,
+                modified: info?.modified || new Date().toISOString(),
+                size: info?.size || bytes
+            }).catch(() => undefined);
             // 有些服务器不返回 getcontentlength，所以用本地实际发送的字节数报喜，
             // 服务器报告的数字只写进日志，方便排查两边不一致的情况。
             console.info(`[WebDAV] 上传 ${bytes} 字节${info ? `，服务器报告 ${info.size} 字节` : '，服务器未返回文件大小'}`);
             notify(`已上传 ${formatBytes(bytes)} 到 WebDAV`, 'success');
-            await this.refreshWebDav();
+            await this.refreshWebDav(false);
         });
     }
 
@@ -836,8 +893,9 @@ export class SettingsPanel extends StoreElement {
         const button = this.querySelector<HTMLButtonElement>('.webdav-delete')!;
         await this.withBusy(button, async () => {
             const existed = await deleteBackup(account);
+            await saveWebDavBackupMeta({ exists: false, modified: '', size: 0 }).catch(() => undefined);
             notify(existed ? '已删除远端备份' : '远端本来就没有备份文件', existed ? 'success' : 'info');
-            await this.refreshWebDav();
+            await this.refreshWebDav(false);
         });
     }
 
@@ -959,6 +1017,14 @@ function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function formatBackupTime(raw: string): string {
+    if (!raw) return '';
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw;
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function formatDuration(seconds: number): string {

@@ -1,4 +1,7 @@
 import { base64ToBytes, bytesToBase64 } from './core/base64';
+import { backupService } from './core/backup-service';
+import { appStore } from './core/store';
+import { loadWebDavAccount, saveWebDavBackupMeta, webDavHref } from './core/webdav';
 import { isWebDavRequestMessage, type WebDavRequestMessage, type WebDavResponseMessage } from './core/webdav-bridge';
 import { isBingWallpaperRequestMessage, type BingWallpaperResponseMessage } from './core/wallpaper-bridge';
 
@@ -101,3 +104,64 @@ function describeTransportError(error: unknown): string {
     if (error instanceof TypeError) return '无法连接服务器：检查地址是否可达、端口是否被防火墙拦下';
     return error instanceof Error ? error.message : '服务器请求失败';
 }
+
+chrome.runtime.onMessageExternal.addListener((request: unknown, _sender: unknown, sendResponse: (value: unknown) => void): boolean => {
+    if (!request || typeof request !== 'object') return false;
+    const msg = request as { type?: string };
+    if (msg.type === 'BACKUP_ALL_PING') {
+        sendResponse({ ok: true, name: 'Infinity New Tab', protocol: 1 });
+        return false;
+    }
+    if (msg.type === 'BACKUP_ALL_TRIGGER') {
+        void (async () => {
+            try {
+                await appStore.init(true);
+                const data = await backupService.exportData();
+                const account = await loadWebDavAccount();
+                if (account && account.url) {
+                    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                    if (account.username || account.password) {
+                        const raw = new TextEncoder().encode(`${account.username}:${account.password}`);
+                        headers.Authorization = `Basic ${bytesToBase64(raw)}`;
+                    }
+                    const bodyText = JSON.stringify(data);
+                    const resp = await fetch(webDavHref(account), {
+                        method: 'PUT',
+                        headers,
+                        body: bodyText,
+                        signal: AbortSignal.timeout(240_000)
+                    });
+                    if (!resp.ok) {
+                        throw new Error(`WebDAV 上传失败（HTTP ${resp.status}）`);
+                    }
+                    await saveWebDavBackupMeta({
+                        exists: true,
+                        modified: new Date().toISOString(),
+                        size: new TextEncoder().encode(bodyText).byteLength
+                    });
+                    const stamp = new Date().toISOString().slice(0, 10);
+                    sendResponse({
+                        ok: true,
+                        mode: 'cloud+json',
+                        filename: `infinity-newtab-backup-${stamp}.json`,
+                        data,
+                        message: 'WebDAV 同步成功 + 已存本地副本'
+                    });
+                } else {
+                    const stamp = new Date().toISOString().slice(0, 10);
+                    sendResponse({
+                        ok: true,
+                        mode: 'json',
+                        filename: `infinity-newtab-backup-${stamp}.json`,
+                        data,
+                        message: 'WebDAV 未配置，已导出本地备份'
+                    });
+                }
+            } catch (error) {
+                sendResponse({ ok: false, message: `备份失败：${describeTransportError(error)}` });
+            }
+        })();
+        return true;
+    }
+    return false;
+});

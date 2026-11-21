@@ -1,8 +1,10 @@
 import { dataUrlToBlob, isRecord, sanitizeImportedData } from './backup';
 import { mediaStore } from './media-store';
 import { appStore } from './store';
-import { storageGet } from './storage';
+import { storageGet, storageSet } from './storage';
 import type { BackupData } from './types';
+
+const LAST_EXPORT_AT_KEY = 'lastBackupExportAt';
 
 export class BackupService {
     async exportData(): Promise<BackupData> {
@@ -61,8 +63,17 @@ export class BackupService {
         }
     }
 
-    async createBackup(): Promise<void> {
-        this.download(await this.exportData());
+    async createBackup(): Promise<string> {
+        const data = await this.exportData();
+        this.download(data);
+        const exportedAt = data.exportDate ?? new Date().toISOString();
+        await storageSet({ [LAST_EXPORT_AT_KEY]: exportedAt }, 'local').catch(() => undefined);
+        return exportedAt;
+    }
+
+    async loadLastExportAt(): Promise<string> {
+        const value = await storageGet<Record<string, unknown>>(LAST_EXPORT_AT_KEY, 'local').catch(() => ({} as Record<string, unknown>));
+        return typeof value[LAST_EXPORT_AT_KEY] === 'string' ? value[LAST_EXPORT_AT_KEY] : '';
     }
 }
 

@@ -25,8 +25,15 @@ export interface WebDavFileInfo {
     modified: string;
 }
 
+export interface WebDavBackupMeta {
+    exists: boolean;
+    modified: string;
+    size: number;
+}
+
 /** Credentials stay in local storage: they are not synced to the Google account. */
 export const WEBDAV_STORAGE_KEY = 'webdav';
+export const WEBDAV_META_STORAGE_KEY = 'webdavBackupMeta';
 export const DEFAULT_WEBDAV_FILE = 'infinity-newtab-backup.json';
 
 /**
@@ -91,7 +98,28 @@ export async function saveWebDavAccount(account: WebDavAccount): Promise<void> {
 }
 
 export async function clearWebDavAccount(): Promise<void> {
-    await storageRemove([WEBDAV_STORAGE_KEY], 'local');
+    await storageRemove([WEBDAV_STORAGE_KEY, WEBDAV_META_STORAGE_KEY], 'local');
+}
+
+export async function loadWebDavBackupMeta(): Promise<WebDavBackupMeta | null> {
+    const value = await storageGet<Record<string, unknown>>(WEBDAV_META_STORAGE_KEY, 'local');
+    const record = isRecord(value[WEBDAV_META_STORAGE_KEY]) ? value[WEBDAV_META_STORAGE_KEY] : null;
+    if (!record) return null;
+    return {
+        exists: Boolean(record.exists),
+        modified: typeof record.modified === 'string' ? record.modified.slice(0, 64) : '',
+        size: typeof record.size === 'number' && Number.isFinite(record.size) ? record.size : 0
+    };
+}
+
+export async function saveWebDavBackupMeta(meta: WebDavBackupMeta): Promise<void> {
+    await storageSet({
+        [WEBDAV_META_STORAGE_KEY]: {
+            exists: Boolean(meta.exists),
+            modified: meta.modified.slice(0, 64),
+            size: Number.isFinite(meta.size) ? meta.size : 0
+        }
+    }, 'local');
 }
 
 /** Uploads a backup, overwriting whatever is already at that name. Returns the bytes sent. */
@@ -253,16 +281,21 @@ function parsePropFind(text: string, fallback: string): WebDavFileInfo | null {
     }
     // Some servers answer 207 and report the missing file inside the status element.
     if (/404\s+Not Found/i.test(document.getElementsByTagName('d:status')[0]?.textContent ?? '')) return null;
-    const entry = document.getElementsByTagName('d:response')[0] ?? document.documentElement;
+    const entry = document.getElementsByTagName('d:response')[0]
+        ?? document.getElementsByTagNameNS('*', 'response')[0]
+        ?? document.documentElement;
     if (!entry) return null;
-    const pick = (tag: string) => entry.getElementsByTagName(tag)[0]?.textContent ?? '';
-    const href = pick('d:href').split('\x00')[0].trim();
-    const display = pick('d:displayname').trim();
+    const pick = (tag: string) => (
+        entry.getElementsByTagName(`d:${tag}`)[0]
+        ?? entry.getElementsByTagNameNS('*', tag)[0]
+    )?.textContent ?? '';
+    const href = pick('href').split('\x00')[0].trim();
+    const display = pick('displayname').trim();
     return {
         href,
         name: display || href.split('/').pop() || fallback,
-        size: Number(pick('d:getcontentlength').trim()) || 0,
-        modified: pick('d:getlastmodified').trim()
+        size: Number(pick('getcontentlength').trim()) || 0,
+        modified: pick('getlastmodified').trim()
     };
 }
 

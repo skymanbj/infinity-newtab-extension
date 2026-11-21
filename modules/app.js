@@ -1223,7 +1223,7 @@
   function dateStamp() {
     return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
   }
-  var BackupService, backupService;
+  var LAST_EXPORT_AT_KEY, BackupService, backupService;
   var init_backup_service = __esm({
     "src/core/backup-service.ts"() {
       "use strict";
@@ -1231,6 +1231,7 @@
       init_media_store();
       init_store();
       init_storage();
+      LAST_EXPORT_AT_KEY = "lastBackupExportAt";
       BackupService = class {
         async exportData() {
           return {
@@ -1283,7 +1284,15 @@
           }
         }
         async createBackup() {
-          this.download(await this.exportData());
+          const data = await this.exportData();
+          this.download(data);
+          const exportedAt = data.exportDate ?? (/* @__PURE__ */ new Date()).toISOString();
+          await storageSet({ [LAST_EXPORT_AT_KEY]: exportedAt }, "local").catch(() => void 0);
+          return exportedAt;
+        }
+        async loadLastExportAt() {
+          const value = await storageGet(LAST_EXPORT_AT_KEY, "local").catch(() => ({}));
+          return typeof value[LAST_EXPORT_AT_KEY] === "string" ? value[LAST_EXPORT_AT_KEY] : "";
         }
       };
       backupService = new BackupService();
@@ -4229,6 +4238,25 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
   async function saveWebDavAccount(account) {
     await storageSet({ [WEBDAV_STORAGE_KEY]: sanitizeWebDavAccount(account) }, "local");
   }
+  async function loadWebDavBackupMeta() {
+    const value = await storageGet(WEBDAV_META_STORAGE_KEY, "local");
+    const record = isRecord(value[WEBDAV_META_STORAGE_KEY]) ? value[WEBDAV_META_STORAGE_KEY] : null;
+    if (!record) return null;
+    return {
+      exists: Boolean(record.exists),
+      modified: typeof record.modified === "string" ? record.modified.slice(0, 64) : "",
+      size: typeof record.size === "number" && Number.isFinite(record.size) ? record.size : 0
+    };
+  }
+  async function saveWebDavBackupMeta(meta) {
+    await storageSet({
+      [WEBDAV_META_STORAGE_KEY]: {
+        exists: Boolean(meta.exists),
+        modified: meta.modified.slice(0, 64),
+        size: Number.isFinite(meta.size) ? meta.size : 0
+      }
+    }, "local");
+  }
   async function uploadBackup(account, data) {
     const body = new Blob([JSON.stringify(data)], { type: "application/json" });
     const response = await request(account, { method: "PUT", headers: { "Content-Type": "application/json" }, body }, UPLOAD_TIMEOUT);
@@ -4349,16 +4377,16 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
       return null;
     }
     if (/404\s+Not Found/i.test(document2.getElementsByTagName("d:status")[0]?.textContent ?? "")) return null;
-    const entry = document2.getElementsByTagName("d:response")[0] ?? document2.documentElement;
+    const entry = document2.getElementsByTagName("d:response")[0] ?? document2.getElementsByTagNameNS("*", "response")[0] ?? document2.documentElement;
     if (!entry) return null;
-    const pick = (tag) => entry.getElementsByTagName(tag)[0]?.textContent ?? "";
-    const href = pick("d:href").split("\0")[0].trim();
-    const display = pick("d:displayname").trim();
+    const pick = (tag) => (entry.getElementsByTagName(`d:${tag}`)[0] ?? entry.getElementsByTagNameNS("*", tag)[0])?.textContent ?? "";
+    const href = pick("href").split("\0")[0].trim();
+    const display = pick("displayname").trim();
     return {
       href,
       name: display || href.split("/").pop() || fallback,
-      size: Number(pick("d:getcontentlength").trim()) || 0,
-      modified: pick("d:getlastmodified").trim()
+      size: Number(pick("getcontentlength").trim()) || 0,
+      modified: pick("getlastmodified").trim()
     };
   }
   function describeStatus(status, action) {
@@ -4373,7 +4401,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     if (error instanceof DOMException && error.name === "TimeoutError") return new Error("\u8BF7\u6C42\u8D85\u65F6\uFF0C\u670D\u52A1\u5668\u54CD\u5E94\u592A\u6162");
     return new Error("\u65E0\u6CD5\u8FDE\u63A5\u670D\u52A1\u5668\uFF1A\u670D\u52A1\u5668\u4E0D\u5141\u8BB8\u8DE8\u57DF\uFF08CORS\uFF09\u3002\u518D\u70B9\u4E00\u6B21\u300C\u4FDD\u5B58\u5E76\u6D4B\u8BD5\u300D\u5E76\u5141\u8BB8\u7F51\u7EDC\u6743\u9650\uFF0C\u8BF7\u6C42\u4F1A\u6539\u8D70\u540E\u53F0\u901A\u9053");
   }
-  var WEBDAV_STORAGE_KEY, DEFAULT_WEBDAV_FILE, QUICK_TIMEOUT, DOWNLOAD_TIMEOUT, UPLOAD_TIMEOUT, MAX_URL_LENGTH, MAX_CREDENTIAL_LENGTH, MAX_FILE_LENGTH, PROPFIND_BODY, UNUSABLE_FILE_NAME;
+  var WEBDAV_STORAGE_KEY, WEBDAV_META_STORAGE_KEY, DEFAULT_WEBDAV_FILE, QUICK_TIMEOUT, DOWNLOAD_TIMEOUT, UPLOAD_TIMEOUT, MAX_URL_LENGTH, MAX_CREDENTIAL_LENGTH, MAX_FILE_LENGTH, PROPFIND_BODY, UNUSABLE_FILE_NAME;
   var init_webdav = __esm({
     "src/core/webdav.ts"() {
       "use strict";
@@ -4382,6 +4410,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
       init_storage();
       init_webdav_bridge();
       WEBDAV_STORAGE_KEY = "webdav";
+      WEBDAV_META_STORAGE_KEY = "webdavBackupMeta";
       DEFAULT_WEBDAV_FILE = "infinity-newtab-backup.json";
       QUICK_TIMEOUT = 2e4;
       DOWNLOAD_TIMEOUT = 12e4;
@@ -4479,6 +4508,13 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
   }
+  function formatBackupTime(raw) {
+    if (!raw) return "";
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw;
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
   function formatDuration(seconds) {
     const total = Math.round(seconds);
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
@@ -4522,6 +4558,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
         releaseLayer = null;
         previewUrl = "";
         previewToken = 0;
+        webdavProbeToken = 0;
         excludedKey = "\0unset";
         connectedCallback() {
           super.connectedCallback();
@@ -4680,7 +4717,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 ${infoRow("\u672C\u5730\u5A92\u4F53", "\u89C6\u9891\u4E0E\u56FE\u7247\u58C1\u7EB8\u4FDD\u5B58\u5728\u672C\u673A\uFF0C\u4E0D\u5360\u7528\u540C\u6B65\u7A7A\u95F4", '<span class="row-value media-usage"></span>')}
             `)}
             ${group("\u5907\u4EFD", `
-                ${infoRow("\u5BFC\u51FA\u5907\u4EFD", "\u4E66\u7B7E\u3001\u8BBE\u7F6E\u548C\u672C\u5730\u58C1\u7EB8\uFF0C\u4E00\u4E2A JSON \u6587\u4EF6", '<button class="pill-button export-data" type="button" data-liquid-item>\u5BFC\u51FA\u2026</button>')}
+                ${infoRow("\u5BFC\u51FA\u5907\u4EFD", "\u4E66\u7B7E\u3001\u8BBE\u7F6E\u548C\u672C\u5730\u58C1\u7EB8\uFF0C\u4E00\u4E2A JSON \u6587\u4EF6", '<span class="export-controls"><span class="row-value export-last-time" hidden></span><button class="pill-button export-data" type="button" data-liquid-item>\u5BFC\u51FA\u2026</button></span>')}
                 ${infoRow("\u4ECE\u5907\u4EFD\u6062\u590D", "\u652F\u6301 1.0 / 2.0 \u5907\u4EFD\uFF0C\u4F1A\u8986\u76D6\u5F53\u524D\u6570\u636E", '<label class="pill-button import-data" data-liquid-item>\u5BFC\u5165\u2026<input type="file" accept="application/json,.json" hidden></label>')}
                 ${infoRow("\u4FEE\u590D\u56FE\u6807", "\u6E05\u6389\u88AB\u591A\u4E2A\u4E0D\u540C\u7AD9\u70B9\u5171\u7528\u7684\u9519\u8BEF\u56FE\u6807\uFF0C\u6539\u56DE\u6309\u57DF\u540D\u81EA\u52A8\u83B7\u53D6", '<button class="pill-button fix-icons" type="button" data-liquid-item>\u4FEE\u590D\u2026</button>')}
                 ${toggleRow("backupReminder", "\u6BCF\u6708\u63D0\u9192\u6211\u5907\u4EFD")}
@@ -4700,6 +4737,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 ${rowLabel("\u8FDC\u7A0B\u5907\u4EFD", "\u5907\u4EFD\u5230\u81EA\u5DF1\u7684 WebDAV \u670D\u52A1\u5668\uFF0C\u8D26\u5BC6\u53EA\u5B58\u5728\u672C\u673A")}
                 <span class="webdav-status">\u672A\u914D\u7F6E</span>
             </div>
+            <span class="webdav-last-backup" hidden></span>
             <div class="webdav-fields">
                 <label class="webdav-field webdav-field--wide"><span>\u670D\u52A1\u5668\u5730\u5740</span><input class="webdav-url" type="text" placeholder="https://dav.example.com/remote.php/dav/files/me" spellcheck="false" autocomplete="off" aria-label="WebDAV \u670D\u52A1\u5668\u5730\u5740"></label>
                 <label class="webdav-field"><span>\u8D26\u6237</span><input class="webdav-user" type="text" spellcheck="false" autocomplete="off" aria-label="WebDAV \u8D26\u6237"></label>
@@ -4807,7 +4845,9 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
               if (done) notify(`\u5DF2\u6062\u590D ${host}`);
             }).catch(notifyError);
           });
-          this.querySelector(".export-data")?.addEventListener("click", () => void backupService.createBackup().catch(notifyError));
+          this.querySelector(".export-data")?.addEventListener("click", () => {
+            void backupService.createBackup().then((exportedAt) => this.renderExportLastTime(exportedAt)).catch(notifyError);
+          });
           this.querySelector(".import-data input")?.addEventListener("change", (event) => {
             const input = event.target;
             const file = input.files?.[0];
@@ -5116,7 +5156,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           const { bookmarks, folders } = appStore.state;
           const summary = this.querySelector(".sync-summary");
           if (summary) summary.textContent = `${bookmarks.length} \u4E2A\u4E66\u7B7E \xB7 ${folders.length - 1} \u4E2A\u6587\u4EF6\u5939`;
-          const [bytes, media] = await Promise.all([
+          const [bytes, media, lastExportAt] = await Promise.all([
             new Promise((resolve) => {
               try {
                 if (!chrome.storage.sync.getBytesInUse) resolve(null);
@@ -5125,7 +5165,8 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
                 resolve(null);
               }
             }),
-            Promise.all([mediaStore.get("image"), mediaStore.get("video")]).catch(() => [null, null])
+            Promise.all([mediaStore.get("image"), mediaStore.get("video")]).catch(() => [null, null]),
+            backupService.loadLastExportAt().catch(() => "")
           ]);
           const usage = this.querySelector(".sync-usage");
           if (usage) usage.textContent = bytes === null ? "" : `\u5DF2\u7528 ${formatBytes2(bytes)} / 100 KB`;
@@ -5134,7 +5175,15 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             const total = media.reduce((sum, blob) => sum + (blob?.size ?? 0), 0);
             mediaUsage.textContent = total ? formatBytes2(total) : "\u65E0";
           }
+          this.renderExportLastTime(lastExportAt);
           void this.refreshWebDav();
+        }
+        renderExportLastTime(raw) {
+          const element = this.querySelector(".export-last-time");
+          if (!element) return;
+          const formatted = formatBackupTime(raw);
+          element.hidden = !formatted;
+          element.textContent = formatted ? `\u6700\u65B0\u5BFC\u51FA\uFF1A${formatted}` : "";
         }
         async importData(file) {
           const confirmed = await confirmAction({
@@ -5167,7 +5216,7 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           return account;
         }
         /** Refills the form and decides which remote actions are available. */
-        async refreshWebDav() {
+        async refreshWebDav(probe = true) {
           const card = this.querySelector(".webdav-card");
           if (!card) return;
           const fill = (selector, value) => {
@@ -5189,6 +5238,33 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             const button = card.querySelector(selector);
             if (button && !button.classList.contains("is-busy")) button.disabled = !account;
           }
+          const meta = account ? await loadWebDavBackupMeta().catch(() => null) : null;
+          this.renderWebDavLastBackup(card, account, meta);
+          if (!probe || !account || !usesBackgroundChannel(account.url)) return;
+          const token = ++this.webdavProbeToken;
+          void inspectBackup(account).then(async (info) => {
+            if (token !== this.webdavProbeToken) return;
+            const latest = info ? { exists: true, modified: info.modified, size: info.size } : { exists: false, modified: "", size: 0 };
+            await saveWebDavBackupMeta(latest).catch(() => void 0);
+            if (token === this.webdavProbeToken) this.renderWebDavLastBackup(card, account, latest);
+          }).catch(() => void 0);
+        }
+        renderWebDavLastBackup(card, account, meta) {
+          const element = card.querySelector(".webdav-last-backup");
+          if (!element) return;
+          if (!account || !meta) {
+            element.hidden = true;
+            element.textContent = "";
+            return;
+          }
+          element.hidden = false;
+          if (!meta.exists) {
+            element.textContent = "\u6700\u65B0\u5907\u4EFD\uFF1A\u8FDC\u7AEF\u6682\u65E0\u5907\u4EFD\u6587\u4EF6";
+            return;
+          }
+          const time = formatBackupTime(meta.modified);
+          const size = meta.size > 0 ? `\uFF08${formatBytes2(meta.size)}\uFF09` : "";
+          element.textContent = time ? `\u6700\u65B0\u5907\u4EFD\uFF1A${time}${size}` : `\u6700\u65B0\u5907\u4EFD\uFF1A\u8FDC\u7AEF\u5DF2\u6709\u5907\u4EFD${size}\uFF08\u670D\u52A1\u5668\u672A\u8FD4\u56DE\u65F6\u95F4\uFF09`;
         }
         async saveWebDav() {
           const button = this.querySelector(".webdav-save");
@@ -5198,12 +5274,13 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             const background = await ensureWebDavAccess(account);
             await saveWebDavAccount(account);
             const info = await inspectBackup(account).catch(() => null);
+            await saveWebDavBackupMeta(info ? { exists: true, modified: info.modified, size: info.size } : { exists: false, modified: "", size: 0 }).catch(() => void 0);
             const remote = info ? `\u8FDC\u7AEF\u5DF2\u6709 ${formatBytes2(info.size)} \u7684\u5907\u4EFD` : "\u8FDC\u7AEF\u8FD8\u6CA1\u6709\u5907\u4EFD\u6587\u4EF6";
             notify(
               background ? `\u5DF2\u4FDD\u5B58\uFF1A${remote}\u3002\u8BF7\u6C42\u8D70\u540E\u53F0\u901A\u9053\uFF0C\u4E0D\u53D7\u8DE8\u57DF\u9650\u5236` : `\u5DF2\u4FDD\u5B58\uFF1A${remote}\u3002\u4F46\u672A\u542F\u7528\u540E\u53F0\u901A\u9053\uFF0C\u4E0A\u4F20\u4ECD\u4F1A\u88AB\u8DE8\u57DF\u62E6\u622A`,
               background ? "success" : "info"
             );
-            await this.refreshWebDav();
+            await this.refreshWebDav(false);
           });
         }
         async uploadWebDav() {
@@ -5214,9 +5291,14 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
             const data = await backupService.exportData();
             const bytes = await uploadBackup(account, data);
             const info = await inspectBackup(account).catch(() => null);
+            await saveWebDavBackupMeta({
+              exists: true,
+              modified: info?.modified || (/* @__PURE__ */ new Date()).toISOString(),
+              size: info?.size || bytes
+            }).catch(() => void 0);
             console.info(`[WebDAV] \u4E0A\u4F20 ${bytes} \u5B57\u8282${info ? `\uFF0C\u670D\u52A1\u5668\u62A5\u544A ${info.size} \u5B57\u8282` : "\uFF0C\u670D\u52A1\u5668\u672A\u8FD4\u56DE\u6587\u4EF6\u5927\u5C0F"}`);
             notify(`\u5DF2\u4E0A\u4F20 ${formatBytes2(bytes)} \u5230 WebDAV`, "success");
-            await this.refreshWebDav();
+            await this.refreshWebDav(false);
           });
         }
         async restoreWebDav() {
@@ -5254,8 +5336,9 @@ fn fragmentMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
           const button = this.querySelector(".webdav-delete");
           await this.withBusy(button, async () => {
             const existed = await deleteBackup(account);
+            await saveWebDavBackupMeta({ exists: false, modified: "", size: 0 }).catch(() => void 0);
             notify(existed ? "\u5DF2\u5220\u9664\u8FDC\u7AEF\u5907\u4EFD" : "\u8FDC\u7AEF\u672C\u6765\u5C31\u6CA1\u6709\u5907\u4EFD\u6587\u4EF6", existed ? "success" : "info");
-            await this.refreshWebDav();
+            await this.refreshWebDav(false);
           });
         }
         async resetData() {

@@ -1946,6 +1946,24 @@ label.setting-row {
     white-space: nowrap;
 }
 
+.webdav-last-backup {
+    color: var(--fg-2);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.export-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.export-last-time {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
 .webdav-fields {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
